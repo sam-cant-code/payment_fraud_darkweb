@@ -26,7 +26,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/socket.io/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-OUTPUT_FILE = 'output/flagged_transactions.csv'
+OUTPUT_FILE = 'output/all_processed_transactions.csv' # Renamed for clarity
 DB_FILE = 'data/wallet_profiles.db' # Path used by agents and setup
 THREAT_FILE = 'data/dark_web_wallets.txt'
 PYTHON_EXE = 'python'
@@ -44,58 +44,88 @@ alchemy_listener_running = False
 alchemy_thread = None
 w3 = None
 
+# --- CSV Fieldnames (including is_fraud) ---
+CSV_FIELDNAMES = [
+    'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
+    'timestamp', 'final_status', 'final_score', 'reasons',
+    'agent_1_score', 'agent_2_score', 'agent_3_score',
+    'is_fraud' # Added ground truth label column
+]
+
+
 # --- Helper Functions ---
 def read_threat_list():
     if not os.path.exists(THREAT_FILE): return []
-    with open(THREAT_FILE, 'r') as f: return [line.strip().lower() for line in f if line.strip()]
+    try:
+        with open(THREAT_FILE, 'r') as f: return [line.strip().lower() for line in f if line.strip()]
+    except Exception as e:
+        print(f"Error reading threat list {THREAT_FILE}: {e}")
+        return []
 
 def write_threat_list(wallets):
     unique_wallets = sorted(list(set(w.lower() for w in wallets if w)))
-    with open(THREAT_FILE, 'w') as f:
-        for wallet in unique_wallets: f.write(f"{wallet}\n")
+    try:
+        with open(THREAT_FILE, 'w') as f:
+            for wallet in unique_wallets: f.write(f"{wallet}\n")
+    except Exception as e:
+        print(f"Error writing threat list {THREAT_FILE}: {e}")
 
 def append_to_csv(filepath, transaction_dict, fieldnames):
+    # Ensure the output directory exists
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     file_exists = os.path.isfile(filepath)
     try:
+        # Use the global CSV_FIELDNAMES
         with open(filepath, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            if not file_exists or os.path.getsize(filepath) == 0: writer.writeheader()
-            writer.writerow(transaction_dict)
-    except (IOError, Exception) as e: print(f"Error appending to CSV {filepath}: {e}")
+            # Write header only if file is new or empty
+            if not file_exists or os.path.getsize(filepath) == 0:
+                writer.writeheader()
+            # Ensure 'is_fraud' key exists, defaulting to empty if not present (for live data)
+            row_to_write = {**{key: '' for key in fieldnames}, **transaction_dict}
+            writer.writerow(row_to_write)
+    except (IOError, OSError, csv.Error, Exception) as e:
+        print(f"Error appending to CSV {filepath}: {e}")
 
 def update_csv_status(filepath, tx_hash, new_status, fieldnames):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     try:
-        # Define fieldnames explicitly in case file is empty or missing headers
-        expected_fieldnames = [
-            'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
-            'timestamp', 'final_status', 'final_score', 'reasons',
-            'agent_1_score', 'agent_2_score', 'agent_3_score'
-        ]
+        # Use global fieldnames
+        expected_fieldnames = fieldnames
         try:
-            df = pd.read_csv(filepath)
+            df = pd.read_csv(filepath, dtype={'is_fraud': 'Int64'}) # Read is_fraud as nullable Int
         except (pd.errors.EmptyDataError, FileNotFoundError):
-             # If file is empty/missing, create an empty DataFrame with headers
             df = pd.DataFrame(columns=expected_fieldnames)
-            if not os.path.exists(filepath): # Create file if it doesn't exist
+            if not os.path.exists(filepath):
                  df.to_csv(filepath, index=False)
                  print(f"Created empty file with headers: {filepath}")
-            return False # Cannot update if file was just created or empty
+            return False
 
         if tx_hash not in df['tx_hash'].values: return False
 
         df.loc[df['tx_hash'] == tx_hash, 'final_status'] = new_status
-        df.to_csv(filepath, index=False) # Overwrite the file with updated data
+        df.to_csv(filepath, index=False)
 
-        # Reload the specific row to return it
         updated_row_series = df[df['tx_hash'] == tx_hash].iloc[0]
-        updated_row = updated_row_series.fillna(0).to_dict() # Fill NaN with 0 before converting
+        # Use fillna appropriately, keep is_fraud potentially null (pd.NA)
+        updated_row = updated_row_series.fillna({
+             'value_eth': 0.0, 'gas_price': 0.0, 'final_score': 0.0,
+             'agent_1_score': 0.0, 'agent_2_score': 0.0, 'agent_3_score': 0.0,
+             'reasons': ''
+             # Do not fillna 'is_fraud' here, keep it as loaded (could be NA)
+        }).to_dict()
 
-        # Ensure numeric types are correct
+        # Convert numeric types
         for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score']:
-            if key in updated_row:
-                try: updated_row[key] = float(updated_row[key])
-                except (ValueError, TypeError): updated_row[key] = 0.0 # Default to 0.0 on error
-        updated_row['reasons'] = str(updated_row.get('reasons', '')) # Ensure reasons is a string
+             try: updated_row[key] = float(updated_row[key])
+             except (ValueError, TypeError): updated_row[key] = 0.0
+        updated_row['reasons'] = str(updated_row.get('reasons', ''))
+        # Convert is_fraud NA to None for JSON compatibility if needed, or keep as is
+        if pd.isna(updated_row.get('is_fraud')):
+             updated_row['is_fraud'] = None
+        elif 'is_fraud' in updated_row:
+             updated_row['is_fraud'] = int(updated_row['is_fraud']) # Ensure it's int if not None
+
 
         return updated_row
     except Exception as e:
@@ -124,10 +154,10 @@ def process_incoming_tx(tx_hash):
             "to_address": tx_data.get('to', '').lower() if tx_data.get('to') else '',
             "value_eth": float(Web3.from_wei(tx_data.get('value', 0), 'ether')),
             "gas_price": float(Web3.from_wei(tx_data.get('gasPrice', 0), 'gwei')),
-            # Use timezone-aware datetime
-            "timestamp": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'), # <-- FIXED DEPRECATION
+            "timestamp": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'), # Fixed deprecation
             "gas_limit": tx_data.get('gas', 0),
             "block_number": tx_data.get('blockNumber', None),
+            # is_fraud will NOT be present here as it's live data
         }
 
         processed_tx = process_transaction_pipeline(adapted_tx.copy())
@@ -135,34 +165,27 @@ def process_incoming_tx(tx_hash):
         score = processed_tx.get('final_score', 0)
 
         print(f"  -> Scanned. Status: {status}, Score: {score:.1f}. Emitting to live feed.")
-        # Emit ALL scanned transactions (this event is now used by frontend)
         socketio.emit('new_scanned_transaction', processed_tx)
 
-        # Always append ALL transactions to the CSV for persistence/initial load
-        csv_fieldnames = [
-            'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
-            'timestamp', 'final_status', 'final_score', 'reasons',
-            'agent_1_score', 'agent_2_score', 'agent_3_score' # Ensure agent_3_score is here
-        ]
-        append_to_csv(OUTPUT_FILE, processed_tx, csv_fieldnames)
-        print(f"  -> Saved {status} transaction to CSV.") # Log saving
+        # Append ALL transactions to the CSV using global fieldnames
+        append_to_csv(OUTPUT_FILE, processed_tx, CSV_FIELDNAMES)
+        print(f"  -> Saved {status} transaction to CSV.")
 
-        # Optionally, still emit a specific event ONLY for flagged/denied if needed elsewhere
+        # Optional: Emit specific event ONLY for flagged/denied
         if status in ['FLAG_FOR_REVIEW', 'DENY']:
             print(f"  -> FLAGGED ({status}). Emitting dedicated flagged event.")
             socketio.emit('new_flagged_transaction', processed_tx)
 
     except Exception as e:
-        # Handle cases where tx might disappear between filter and get_transaction
         if "not found" in str(e).lower() or isinstance(e, ValueError) and "Transaction" in str(e) and "not found" in str(e):
             print(f"[Alchemy Listener] Tx {tx_hash_hex[:10]}... likely dropped or already mined before fetch.")
         else:
             print(f"[Alchemy Listener] Error processing tx {tx_hash_hex[:10]}...: {e}")
-            # Consider more detailed error logging here if needed
 
 
-# --- REFACTORED Alchemy HTTP Listener Loop (Polling) ---
+# --- Alchemy Listener Loop (No changes needed) ---
 def alchemy_listener_loop():
+    # ... (function remains the same) ...
     global alchemy_listener_running, w3
     print("[Alchemy Listener] Starting listener loop...")
     while alchemy_listener_running:
@@ -188,20 +211,19 @@ def alchemy_listener_loop():
                         for tx_hash in new_tx_hashes:
                             # Process transactions sequentially for simplicity
                             process_incoming_tx(tx_hash)
-                            time.sleep(0.05) # Small delay to avoid overwhelming API/CPU if many tx come at once
+                            time.sleep(0.05) # Small delay
 
                     # Wait a short duration before polling again
                     time.sleep(2) # Poll every 2 seconds
 
                 except Exception as loop_err:
                     print(f"[Alchemy Listener] Error in polling loop: {loop_err}")
-                    # If there's an error, the connection might be dead. Break to reconnect.
                     break
 
-            # If the loop breaks, it means we disconnected.
+            # If the loop breaks, disconnected or error.
             print("[Alchemy Listener] Disconnected or polling loop error. Will attempt to reconnect...")
             w3 = None
-            time.sleep(5) # Wait before reconnecting
+            time.sleep(5)
 
         except Exception as e:
             print(f"[Alchemy Listener] Major error in listener setup: {e}")
@@ -212,9 +234,10 @@ def alchemy_listener_loop():
     print("[Alchemy Listener] Listener loop stopped.")
 
 
-# --- SocketIO Events ---
+# --- SocketIO Events (No changes needed) ---
 @socketio.on('connect')
 def handle_connect():
+    # ... (function remains the same) ...
     global alchemy_thread, alchemy_listener_running
     print('Client connected:', request.sid)
     if not alchemy_listener_running and ALCHEMY_HTTP_URL != "YOUR_ALCHEMY_HTTP_URL":
@@ -222,48 +245,55 @@ def handle_connect():
         alchemy_listener_running = True
         alchemy_thread = threading.Thread(target=alchemy_listener_loop, daemon=True)
         alchemy_thread.start()
-    emit('status_update', {'websocket_connected': True, 'simulation_running': alchemy_listener_running})
+    # Emit current status on connect
+    db_ready = os.path.exists('data/wallet_profiles.db')
+    threat_ready = os.path.exists(THREAT_FILE)
+    output_exists = os.path.exists(OUTPUT_FILE) and os.path.getsize(OUTPUT_FILE) > 50
+    emit('status_update', {
+        'websocket_connected': True,
+        'listener_active': alchemy_listener_running,
+        'database_ready': db_ready,
+        'threat_list_available': threat_ready,
+        'has_flagged_data': output_exists # Reflects CSV state
+    })
+
 
 @socketio.on('disconnect')
 def handle_disconnect():
+    # ... (function remains the same) ...
     print('Client disconnected:', request.sid)
-    # Note: Listener thread continues running even if clients disconnect,
-    # as it's managed by the 'alchemy_listener_running' flag, which isn't reset here.
 
 
 # --- API Endpoints ---
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    db_file_exists = os.path.exists('data/wallet_profiles.db') # Check specific DB file used
+    # ... (function remains the same as previous corrected version) ...
+    db_file_exists = os.path.exists('data/wallet_profiles.db')
     threat_file_exists = os.path.exists(THREAT_FILE)
     output_file_exists = os.path.exists(OUTPUT_FILE)
-    has_data = output_file_exists and os.path.getsize(OUTPUT_FILE) > 50 # Check if CSV has more than just headers potentially
-    
+    has_data = output_file_exists and os.path.getsize(OUTPUT_FILE) > 50
+
     return jsonify({
-        'database_ready': db_file_exists, # Check profile DB specifically
-        'simulation_running': alchemy_listener_running,
+        'database_ready': db_file_exists,
+        'simulation_running': alchemy_listener_running, # Keep for compatibility if UI uses it
         'threat_list_available': threat_file_exists,
-        'has_flagged_data': has_data, # Renamed for clarity, reflects CSV state
-        'listener_active': alchemy_listener_running
+        'has_flagged_data': has_data, # Reflects CSV having data
+        'listener_active': alchemy_listener_running # Specific listener status
     })
+
 
 @app.route('/api/setup', methods=['POST'])
 def run_setup():
+    # ... (function remains the same as previous corrected version) ...
     try:
-        # Run the original setup script which creates mock data, models, and profile DB
         result = subprocess.run([PYTHON_EXE, '0_setup_database.py'], capture_output=True, text=True, check=True)
         print(result.stdout)
 
-        # Ensure the output CSV exists with headers even if setup doesn't create it
-        csv_fieldnames = [
-            'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
-            'timestamp', 'final_status', 'final_score', 'reasons',
-            'agent_1_score', 'agent_2_score', 'agent_3_score'
-        ]
+        # Ensure the output CSV exists with headers (using global fieldnames)
         if not os.path.exists(OUTPUT_FILE) or os.path.getsize(OUTPUT_FILE) == 0:
             os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
             with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=csv_fieldnames)
+                writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
                 writer.writeheader()
             print(f"Ensured output file exists with headers: {OUTPUT_FILE}")
 
@@ -279,47 +309,52 @@ def run_setup():
 
 @app.route('/api/flagged-transactions', methods=['GET'])
 def get_flagged_transactions():
-    # This now returns ALL transactions saved in the CSV
+    # Endpoint now returns ALL transactions from the CSV
     if not os.path.exists(OUTPUT_FILE):
-        return jsonify([]) # Return empty list if file doesn't exist
+        return jsonify([])
 
     try:
-        df = pd.read_csv(OUTPUT_FILE)
+        # Read is_fraud as nullable Int64
+        df = pd.read_csv(OUTPUT_FILE, dtype={'is_fraud': 'Int64'})
         if df.empty:
-            return jsonify([]) # Return empty list if file is empty
+            return jsonify([])
 
-        # Fill potential missing numeric values with 0 and string values with ''
+        # Fill NaNs appropriately
         df = df.fillna({
             'value_eth': 0.0, 'gas_price': 0.0, 'final_score': 0.0,
             'agent_1_score': 0.0, 'agent_2_score': 0.0, 'agent_3_score': 0.0,
             'reasons': ''
+            # 'is_fraud' remains potentially pd.NA
         })
 
         transactions = df.to_dict('records')
 
-        # Convert numeric types and ensure reasons is string
+        # Convert types and handle is_fraud NA -> None
         for row in transactions:
             for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score']:
-                try:
-                    row[key] = float(row[key])
-                except (ValueError, TypeError):
-                    row[key] = 0.0 # Default to 0.0 on error
-            row['reasons'] = str(row.get('reasons', '')) # Ensure reasons is string
+                try: row[key] = float(row[key])
+                except (ValueError, TypeError): row[key] = 0.0
+            row['reasons'] = str(row.get('reasons', ''))
+            # Convert is_fraud NA to None for JSON
+            if pd.isna(row.get('is_fraud')):
+                 row['is_fraud'] = None
+            elif 'is_fraud' in row:
+                 row['is_fraud'] = int(row['is_fraud']) # Ensure it's int
 
-        # Sort by timestamp descending (newest first)
+        # Sort by timestamp descending
         transactions.sort(key=lambda x: x.get('timestamp', '1970-01-01T00:00:00Z'), reverse=True)
         return jsonify(transactions)
 
     except pd.errors.EmptyDataError:
-        return jsonify([]) # Return empty list if pandas reads an empty file
+        return jsonify([])
     except Exception as e:
         print(f"Error reading transactions CSV: {e}")
         return jsonify({"error": f"Failed to read transaction data: {str(e)}"}), 500
 
-
+# --- /api/wallet/<address> (No changes needed) ---
 @app.route('/api/wallet/<address>', methods=['GET'])
 def get_wallet_profile(address):
-    # Uses the DB file created by 0_setup_database.py
+    # ... (function remains the same) ...
     profile_db_path = 'data/wallet_profiles.db'
     if not os.path.exists(profile_db_path):
         return jsonify({"error": "Wallet profiles database not found. Run setup."}), 404
@@ -339,8 +374,11 @@ def get_wallet_profile(address):
     except Exception as e:
          return jsonify({"error": f"Unexpected error fetching profile: {str(e)}"}), 500
 
+
+# --- /api/review/<tx_hash> (No changes needed, uses global CSV_FIELDNAMES now) ---
 @app.route('/api/review/<tx_hash>', methods=['POST'])
 def submit_review(tx_hash):
+    # ... (function remains the same, uses global CSV_FIELDNAMES) ...
     data = request.get_json()
     new_status = data.get('status')
     if not new_status or new_status not in ['APPROVE', 'DENY', 'FLAG_FOR_REVIEW']:
@@ -349,33 +387,30 @@ def submit_review(tx_hash):
     if not os.path.exists(OUTPUT_FILE):
         return jsonify({"error": "Transaction file not found."}), 404
 
-    # Fieldnames needed for update function
-    csv_fieldnames = [
-        'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
-        'timestamp', 'final_status', 'final_score', 'reasons',
-        'agent_1_score', 'agent_2_score', 'agent_3_score'
-    ]
-
-    updated_transaction = update_csv_status(OUTPUT_FILE, tx_hash, new_status, csv_fieldnames)
+    # Use global fieldnames for the update function
+    updated_transaction = update_csv_status(OUTPUT_FILE, tx_hash, new_status, CSV_FIELDNAMES)
 
     if updated_transaction:
-        # Emit the update to all connected clients
         socketio.emit('transaction_update', updated_transaction)
         print(f"Review submitted: Tx {tx_hash[:10]}... updated to {new_status}")
         return jsonify({"message": f"Transaction {tx_hash} status updated to {new_status}"}), 200
     else:
-        # Check if the transaction hash was simply not found
         try:
-            df = pd.read_csv(OUTPUT_FILE)
-            if tx_hash not in df['tx_hash'].values:
-                return jsonify({"error": f"Transaction hash {tx_hash} not found in the file."}), 404
+            # Check if file exists before reading again for 404 check
+            if os.path.exists(OUTPUT_FILE):
+                df = pd.read_csv(OUTPUT_FILE)
+                if tx_hash not in df['tx_hash'].values:
+                    return jsonify({"error": f"Transaction hash {tx_hash} not found in the file."}), 404
+            else: # Should not happen based on earlier check, but belts and braces
+                 return jsonify({"error": "Transaction file disappeared unexpectedly."}), 500
         except Exception:
-            pass # Fall through to generic error if file reading fails
+            pass # Fall through to generic error
         return jsonify({"error": "Failed to update transaction status. Check logs."}), 500
 
-
+# --- /api/threats endpoints (No changes needed) ---
 @app.route('/api/threats', methods=['GET'])
 def get_threats():
+    # ... (function remains the same) ...
     try:
         return jsonify(read_threat_list())
     except Exception as e:
@@ -383,19 +418,18 @@ def get_threats():
 
 @app.route('/api/threats', methods=['POST'])
 def add_threat():
+    # ... (function remains the same) ...
     data = request.get_json()
     new_wallet = data.get('wallet_address', '').strip().lower()
-    # Basic validation
     if not new_wallet.startswith('0x') or len(new_wallet) != 42:
         return jsonify({"error": "Invalid wallet address format."}), 400
     try:
         current_wallets = read_threat_list()
         if new_wallet in current_wallets:
-            return jsonify({"message": "Wallet address already in threat list."}), 200 # Or 409 Conflict
+            return jsonify({"message": "Wallet address already in threat list."}), 200
 
         current_wallets.append(new_wallet)
         write_threat_list(current_wallets)
-        # Reload the list to ensure consistency and emit
         updated_list = read_threat_list()
         socketio.emit('threat_list_updated', updated_list)
         print(f"Threat added: {new_wallet}")
@@ -405,6 +439,7 @@ def add_threat():
 
 @app.route('/api/threats', methods=['DELETE'])
 def remove_threat():
+    # ... (function remains the same) ...
     data = request.get_json()
     wallet_to_remove = data.get('wallet_address', '').strip().lower()
     if not wallet_to_remove:
@@ -417,7 +452,6 @@ def remove_threat():
 
         updated_wallets = [w for w in current_wallets if w != wallet_to_remove]
         write_threat_list(updated_wallets)
-        # Emit the updated list
         socketio.emit('threat_list_updated', updated_wallets)
         print(f"Threat removed: {wallet_to_remove}")
         return jsonify({"message": f"Wallet address {wallet_to_remove} removed from threat list."}), 200
@@ -427,12 +461,11 @@ def remove_threat():
 
 # --- Main Execution ---
 if __name__ == '__main__':
-    # Ensure necessary directories exist
+    # ... (Directory creation and setup checks remain the same) ...
     os.makedirs('data', exist_ok=True)
     os.makedirs('output', exist_ok=True)
     os.makedirs('models', exist_ok=True)
 
-    # Check for essential files created by setup
     if not os.path.exists('data/wallet_profiles.db') or not os.path.exists(THREAT_FILE) or not os.path.exists('models/behavior_model.pkl'):
         print("-" * 60)
         print("Warning: One or more data/model files missing.")
@@ -440,25 +473,17 @@ if __name__ == '__main__':
         print("before starting the backend to ensure proper functionality.")
         print("-" * 60)
 
-    # Ensure output CSV exists with headers
-    csv_fieldnames = [
-        'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
-        'timestamp', 'final_status', 'final_score', 'reasons',
-        'agent_1_score', 'agent_2_score', 'agent_3_score'
-    ]
+    # Ensure output CSV exists with headers (using global fieldnames)
     if not os.path.exists(OUTPUT_FILE) or os.path.getsize(OUTPUT_FILE) == 0:
         with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=csv_fieldnames)
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
         print(f"Ensured output file exists with headers: {OUTPUT_FILE}")
 
     print("Starting Flask-SocketIO server...")
-    # Use host='0.0.0.0' to make it accessible on the network
-    # debug=True enables auto-reloading but might run the listener twice in some setups.
-    # Set use_reloader=False if you experience duplicate processing with debug=True.
     socketio.run(app, debug=True, port=5000, host='0.0.0.0', use_reloader=False)
 
-    # Cleanup listener thread if it was started
+    # ... (Cleanup remains the same) ...
     alchemy_listener_running = False
     if alchemy_thread and alchemy_thread.is_alive():
         print("Waiting for Alchemy listener thread to stop...")
