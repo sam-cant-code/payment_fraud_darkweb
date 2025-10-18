@@ -129,8 +129,9 @@ def create_wallet_profiles_db(normal_wallets):
         avg_value = round(random.uniform(1, 15), 2)
         tx_count = random.randint(10, 100)
         
+        # --- THIS IS THE CORRECTED LINE ---
         cursor.execute("""
-            INSERT INTO wallet_profiles 
+            INSERT OR REPLACE INTO wallet_profiles 
             (wallet_address, avg_transaction_value, transaction_count, last_updated)
             VALUES (?, ?, ?, ?)
         """, (wallet, avg_value, tx_count, "2025-10-01T00:00:00Z"))
@@ -152,9 +153,14 @@ def train_behavior_model():
     print("\n=== Training Behavior Model ===")
     
     # Load the mock transactions
-    with open('data/mock_blockchain_transactions.json', 'r') as f:
-        transactions = json.load(f)
-    
+    try:
+        with open('data/mock_blockchain_transactions.json', 'r') as f:
+            transactions = json.load(f)
+    except FileNotFoundError:
+        print("Error: mock_blockchain_transactions.json not found.")
+        print("Please ensure setup is run in the correct directory.")
+        return
+
     # Extract features for training
     features = []
     for tx in transactions:
@@ -163,6 +169,10 @@ def train_behavior_model():
             tx['gas_price']
         ])
     
+    if not features:
+        print("No features found to train model. Skipping.")
+        return
+
     features = np.array(features)
     
     # Train IsolationForest model
