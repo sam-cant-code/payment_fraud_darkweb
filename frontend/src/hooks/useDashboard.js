@@ -3,7 +3,7 @@ import {
   getStatus,
   postRunSetup,
   // postRunSimulation, // Removed
-  getFlaggedTransactions, // Still needed for initial load
+  getFlaggedTransactions, // Still needed for initial load (now gets all tx)
   getWalletProfile,
   postReview,
   getThreats,
@@ -18,10 +18,11 @@ const useDashboard = () => {
   // --- State ---
   const [status, setStatus] = useState({
     database_ready: false,
-    simulation_running: false, // Changed from simulation_run
+    simulation_running: false, // Changed from simulation_run -> listener_active
     threat_list_available: false,
-    has_flagged_data: false, // Added from backend status
+    has_flagged_data: false, // Added from backend status (now means CSV has data)
     websocket_connected: false, // Added connection status
+    listener_active: false, // Tracks the Alchemy listener status from backend
   });
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState({
@@ -33,7 +34,7 @@ const useDashboard = () => {
     threats: true, // Load threats initially
     walletProfile: false,
   });
-  const [error, setError] = useState({ /* ... as before ... */ });
+  const [error, setError] = useState({ status: null, setup: null, transactions: null, review: null, threats: null, walletProfile: null }); // Expanded error state
   const [notification, setNotification] = useState(null);
   const [threatList, setThreatList] = useState([]);
   const [selectedWalletProfile, setSelectedWalletProfile] = useState(null);
@@ -59,9 +60,16 @@ const useDashboard = () => {
     setError((prev) => ({ ...prev, status: null }));
     try {
       const response = await getStatus();
+      // Ensure backend response structure matches expected state keys
+      const backendStatus = response.data;
       setStatus(prevStatus => ({
-          ...prevStatus, // Keep websocket_connected status
-          ...response.data // Update with API response
+          ...prevStatus, // Keep existing websocket_connected status
+          database_ready: backendStatus.database_ready ?? false,
+          simulation_running: backendStatus.simulation_running ?? false, // Keep for Sidebar logic if needed
+          listener_active: backendStatus.listener_active ?? false, // Use specific listener status
+          threat_list_available: backendStatus.threat_list_available ?? false,
+          has_flagged_data: backendStatus.has_flagged_data ?? false,
+          // Do not update websocket_connected from here, handled by socket events
       }));
     } catch (err) {
       setError((prev) => ({ ...prev, status: 'Failed to fetch status' }));
@@ -72,25 +80,25 @@ const useDashboard = () => {
          setLoading((prev) => ({ ...prev, status: false }));
        }
     }
-  }, [showNotification]);
+  }, [showNotification]); // Added missing dependency
 
-  // Fetches the *initial* list of transactions from the CSV/DB log
+  // Fetches the *initial* list of transactions from the CSV/DB log (now includes all statuses)
   const fetchInitialTransactions = useCallback(async () => {
     setLoading((prev) => ({ ...prev, transactions: true }));
     setError((prev) => ({ ...prev, transactions: null }));
     try {
-      const response = await getFlaggedTransactions();
+      const response = await getFlaggedTransactions(); // API endpoint name is kept, but it returns all now
       // Sort by timestamp descending for initial view (newest first)
       const sortedTransactions = response.data.sort((a, b) =>
         new Date(b.timestamp) - new Date(a.timestamp)
       );
       setTransactions(sortedTransactions.slice(0, MAX_TRANSACTIONS)); // Apply limit
-      console.log(`Loaded initial ${sortedTransactions.length} transactions.`);
+      console.log(`Loaded initial ${sortedTransactions.length} transactions (all statuses).`);
     } catch (err) {
-      // Handle 404 as empty list, other errors as errors
        if (err.response && err.response.status === 404) {
         setTransactions([]);
-        console.log("Initial transaction file not found or empty.");
+        console.log("Initial transaction file not found or empty (API returned 404).");
+        // Don't show error notification for 404, it's a valid state if file is empty/missing
       } else {
         setError((prev) => ({ ...prev, transactions: 'Failed to fetch initial transactions' }));
         showNotification('Failed to fetch initial transactions.', 'error');
@@ -99,7 +107,7 @@ const useDashboard = () => {
     } finally {
       setLoading((prev) => ({ ...prev, transactions: false }));
     }
-  }, [showNotification]);
+  }, [showNotification]); // Added missing dependency
 
   const fetchThreatList = useCallback(async () => {
      if (!isInitialLoadDone.current) { // Only show loading on initial load
@@ -118,7 +126,7 @@ const useDashboard = () => {
          setLoading((prev) => ({ ...prev, threats: false }));
       }
     }
-  }, [showNotification]);
+  }, [showNotification]); // Added missing dependency
 
   // --- Action Callbacks ---
   const runSetup = useCallback(async () => {
@@ -127,8 +135,11 @@ const useDashboard = () => {
     try {
       const response = await postRunSetup();
       showNotification(response.data.message, 'success');
-      await fetchStatus(); // Refresh status
-    } catch (err) { // Error handling as before
+      // After setup, fetch everything again to reflect new state
+      await fetchStatus();
+      await fetchThreatList();
+      await fetchInitialTransactions();
+    } catch (err) {
       const errorMsg = err.response?.data?.error || 'Setup failed';
       setError((prev) => ({ ...prev, setup: errorMsg }));
       showNotification(errorMsg, 'error');
@@ -136,22 +147,18 @@ const useDashboard = () => {
     } finally {
       setLoading((prev) => ({ ...prev, setup: false }));
     }
-  }, [fetchStatus, showNotification]);
+    // Added fetchThreatList and fetchInitialTransactions to dependencies
+  }, [fetchStatus, showNotification, fetchThreatList, fetchInitialTransactions]);
 
   // runSimulation is no longer needed as a direct user action
 
   const submitTxReview = useCallback(async (txHash, newStatus) => {
-    // (Keep implementation as before - backend now handles the socket emit)
     setLoading((prev) => ({ ...prev, review: true }));
     setError((prev) => ({ ...prev, review: null }));
     try {
       const response = await postReview(txHash, newStatus);
       showNotification(response.data.message, 'success');
-      // OPTIONAL: Immediately update local state for faster UI feedback,
-      // but rely on the websocket 'transaction_update' for the source of truth
-      // setTransactions(prev => prev.map(tx =>
-      //   tx.tx_hash === txHash ? { ...tx, final_status: newStatus } : tx
-      // ));
+      // No immediate local state update needed; rely on 'transaction_update' event
     } catch (err) {
       const errorMsg = err.response?.data?.error || 'Review submission failed';
       setError((prev) => ({ ...prev, review: errorMsg }));
@@ -160,62 +167,81 @@ const useDashboard = () => {
     } finally {
       setLoading((prev) => ({ ...prev, review: false }));
     }
-  }, [showNotification]);
+  }, [showNotification]); // Added missing dependency
 
-  // addWalletToThreats & removeWalletFromThreats can remain mostly the same,
-  // but rely on 'threat_list_updated' event if implemented, or call fetchThreatList
+  // addWalletToThreats & removeWalletFromThreats rely on 'threat_list_updated' event
  const addWalletToThreats = useCallback(async (walletAddress) => {
-    setLoading((prev) => ({ ...prev, threats: true }));
+    setLoading((prev) => ({ ...prev, threats: true })); // Indicate loading
     setError((prev) => ({ ...prev, threats: null }));
     try {
         await postThreat(walletAddress);
+        showNotification(`Attempting to add ${walletAddress.substring(0,10)}...`, 'info', 2000); // Give feedback
         // Backend now emits 'threat_list_updated', no local update needed here
-        // If not using emit, uncomment: await fetchThreatList();
-    } catch (err) { // Error handling as before...
+    } catch (err) {
        const errorMsg = err.response?.data?.error || 'Failed to add wallet';
        setError((prev) => ({ ...prev, threats: errorMsg }));
        showNotification(errorMsg, 'error');
        console.error("Add threat error:", err);
-    } finally {
-       setLoading((prev) => ({ ...prev, threats: false })); // Stop loading anyway
+       setLoading((prev) => ({ ...prev, threats: false })); // Stop loading on error
     }
+    // Loading state reset by 'threat_list_updated' event handler or error handler
 }, [showNotification]); // Removed fetchThreatList
 
 const removeWalletFromThreats = useCallback(async (walletAddress) => {
-    setLoading((prev) => ({ ...prev, threats: true }));
+    setLoading((prev) => ({ ...prev, threats: true })); // Indicate loading
     setError((prev) => ({ ...prev, threats: null }));
     try {
         await deleteThreat(walletAddress);
+        showNotification(`Attempting to remove ${walletAddress.substring(0,10)}...`, 'info', 2000); // Give feedback
          // Backend now emits 'threat_list_updated', no local update needed here
-         // If not using emit, uncomment: await fetchThreatList();
-    } catch (err) { // Error handling as before...
+    } catch (err) {
        const errorMsg = err.response?.data?.error || 'Failed to remove wallet';
        setError((prev) => ({ ...prev, threats: errorMsg }));
        showNotification(errorMsg, 'error');
        console.error("Remove threat error:", err);
-    } finally {
-       setLoading((prev) => ({ ...prev, threats: false }));
+       setLoading((prev) => ({ ...prev, threats: false })); // Stop loading on error
     }
+     // Loading state reset by 'threat_list_updated' event handler or error handler
 }, [showNotification]); // Removed fetchThreatList
 
-  const fetchWalletDetails = useCallback(async (address) => { /* ... as before ... */ }, [showNotification]);
+  // Fetch Wallet Details (example, might need implementation)
+  const fetchWalletDetails = useCallback(async (address) => {
+    if (!address) return;
+    setLoading(prev => ({ ...prev, walletProfile: true }));
+    setError(prev => ({ ...prev, walletProfile: null }));
+    setSelectedWalletProfile(null); // Clear previous
+    try {
+      const response = await getWalletProfile(address);
+      setSelectedWalletProfile(response.data);
+      console.log("Fetched profile for:", address, response.data);
+    } catch (err) {
+      const errorMsg = err.response?.status === 404
+        ? `No profile found for wallet ${address.substring(0, 10)}...`
+        : 'Failed to fetch wallet profile.';
+      setError(prev => ({ ...prev, walletProfile: errorMsg }));
+      showNotification(errorMsg, err.response?.status === 404 ? 'info' : 'error');
+      console.error("Wallet profile fetch error:", err);
+    } finally {
+      setLoading(prev => ({ ...prev, walletProfile: false }));
+    }
+  }, [showNotification]);
+
 
   // --- Effects ---
 
   // Effect for Initial Load and WebSocket Management
   useEffect(() => {
     const performInitialLoad = async () => {
-        console.log("Performing initial data load...");
+        console.log("Performing initial data load (expecting all statuses)...");
+        setLoading(prev => ({ ...prev, status: true, threats: true, transactions: true })); // Set all initial loads
         await fetchStatus();
         await fetchThreatList();
-        // Fetch initial transactions only if status indicates data might exist
-        if (status.has_flagged_data || status.simulation_running) {
-            await fetchInitialTransactions();
-        } else {
-            setLoading((prev) => ({ ...prev, transactions: false }));
-        }
+        // Fetch initial transactions (now includes all statuses from CSV)
+        await fetchInitialTransactions(); // Renamed function call
+        // Removed conditional loading based on status, always load initial now
         isInitialLoadDone.current = true; // Mark initial load as done
-         console.log("Initial data load complete.");
+        setLoading(prev => ({ ...prev, status: false, threats: false, transactions: false })); // Clear initial loads
+        console.log("Initial data load complete.");
     };
 
     performInitialLoad();
@@ -230,19 +256,32 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
 
     const onDisconnect = (reason) => {
       console.log('Socket disconnected:', reason);
-      setStatus(prev => ({ ...prev, websocket_connected: false, simulation_running: false })); // Assume simulation stops if socket drops
+      setStatus(prev => ({ ...prev, websocket_connected: false, listener_active: false })); // Assume listener stops if socket drops
       showNotification('Real-time connection lost.', 'error');
     };
 
+    // This function handles incoming transactions from the websocket
     const onNewTransaction = (newTransaction) => {
-      console.log('Received new flagged transaction:', newTransaction);
+      console.log('Received new scanned transaction:', newTransaction); // Log changed slightly
       setTransactions(prev => {
           // Add to start, maintain sort order (newest first), and limit size
+          // Ensure no duplicates if initial load races with websocket
+          if (prev.some(tx => tx.tx_hash === newTransaction.tx_hash)) {
+              console.log(`Tx ${newTransaction.tx_hash.substring(0,10)}... already exists.`);
+              return prev; // Already exists, do nothing
+          }
           const updated = [newTransaction, ...prev];
           return updated.slice(0, MAX_TRANSACTIONS);
       });
-      // Maybe a less intrusive notification?
-      // showNotification(`New tx flagged: ${newTransaction.tx_hash.substring(0, 10)}...`, 'warning', 3000);
+      // Optional: Show a subtle notification for approved ones?
+       if (newTransaction.final_status === 'APPROVE') {
+         // Maybe too noisy - consider removing or making it very subtle
+         // showNotification(`Tx ${newTransaction.tx_hash.substring(0,10)}... approved.`, 'info', 2000);
+       } else {
+           // Highlight Flagged/Denied ones
+           const messageType = newTransaction.final_status === 'DENY' ? 'error' : 'warning';
+           showNotification(`Tx ${newTransaction.tx_hash.substring(0,10)}... ${newTransaction.final_status.replace('_',' ')}.`, messageType, 4000);
+       }
     };
 
     const onTransactionUpdate = (updatedTransaction) => {
@@ -250,12 +289,13 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
        setTransactions(prev => prev.map(tx =>
           tx.tx_hash === updatedTransaction.tx_hash ? updatedTransaction : tx
        ));
-       showNotification(`Tx ${updatedTransaction.tx_hash.substring(0,10)}... updated.`, 'info', 3000);
+       showNotification(`Tx ${updatedTransaction.tx_hash.substring(0,10)}... review updated.`, 'info', 3000);
     };
 
     const onThreatListUpdate = (updatedList) => {
         console.log('Received threat list update');
         setThreatList(updatedList);
+        setLoading((prev) => ({ ...prev, threats: false })); // Stop loading indicator after update
         showNotification('Threat list updated.', 'info', 3000);
     };
 
@@ -266,26 +306,28 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
     }
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
-    socket.on('new_flagged_transaction', onNewTransaction);
+
+    // Listen for ALL scanned transactions, not just flagged ones
+    socket.on('new_scanned_transaction', onNewTransaction);
+
     socket.on('transaction_update', onTransactionUpdate);
     socket.on('threat_list_updated', onThreatListUpdate); // Listener for threat list updates
 
     // --- Cleanup Function ---
     return () => {
-      console.log("Cleaning up socket listeners and disconnecting...");
+      console.log("Cleaning up socket listeners...");
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
-      socket.off('new_flagged_transaction', onNewTransaction);
+      socket.off('new_scanned_transaction', onNewTransaction); // Clean up the correct listener
       socket.off('transaction_update', onTransactionUpdate);
       socket.off('threat_list_updated', onThreatListUpdate);
-      // Only disconnect if you want it to stop when the component unmounts
-      // If App is the main component, maybe keep it connected?
+      // Decide whether to disconnect on unmount based on app structure
+      // If this hook is in the main App component, maybe leave it connected.
       // socket.disconnect();
       // setStatus(prev => ({ ...prev, websocket_connected: false }));
     };
-    // Re-run effect minimally, only on mount/unmount in this setup
-    // Dependencies like showNotification, fetchStatus should be stable via useCallback
-  }, [showNotification, fetchStatus, fetchThreatList, fetchInitialTransactions]); // Add fetch callbacks to deps
+    // Ensure all useCallback-wrapped functions used in the effect are listed
+  }, [showNotification, fetchStatus, fetchThreatList, fetchInitialTransactions]);
 
 
   return {
@@ -296,15 +338,15 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
     notification,
     runSetup, // Keep setup action
     // runSimulation, // Removed
-    fetchTransactions: fetchInitialTransactions, // Rename for clarity (fetches initial only)
+    fetchTransactions: fetchInitialTransactions, // Export renamed function
     clearNotification,
     threatList,
-    selectedWalletProfile,
+    selectedWalletProfile, // Export selected profile state
     fetchThreatList, // Keep for potential manual refresh
     addWalletToThreats,
     removeWalletFromThreats,
     submitTxReview,
-    fetchWalletDetails,
+    fetchWalletDetails, // Export wallet detail fetch function
   };
 };
 

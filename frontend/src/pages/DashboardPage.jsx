@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react'; // <-- Added useEffect here
+import React, { useState, useMemo, useEffect } from 'react';
 import MetricsGrid from '../components/dashboard/MetricsGrid';
 import RiskGauge from '../components/charts/RiskGauge';
 import StatusDistribution from '../components/charts/StatusDistribution';
@@ -6,102 +6,115 @@ import RiskTimeline from '../components/charts/RiskTimeline';
 import TransactionsTable from '../components/dashboard/TransactionsTable';
 import TransactionDetail from '../components/dashboard/TransactionDetail';
 import Loader from '../components/shared/Loader';
-import { AlertCircle, BarChart2, RefreshCw } from 'lucide-react';
+import { AlertCircle, BarChart2 } from 'lucide-react'; // Removed RefreshCw if not used
 
-// Added onSubmitReview prop
-const DashboardPage = ({ transactions, loading, error, onSubmitReview }) => {
+// Added onSubmitReview prop, isLoadingReview for detail view
+const DashboardPage = ({ transactions, loading, error, onSubmitReview, isLoadingReview }) => {
   const [selectedTx, setSelectedTx] = useState(null);
 
-  // Memoize calculations (remains the same)
+  // Memoize calculations for stats based on the current transactions list
   const stats = useMemo(() => {
      if (!transactions || transactions.length === 0) {
-      return { totalFlagged: 0, denied: 0, review: 0, totalValue: 0, avgScore: 0 };
+      // Return zeroed stats if no transactions
+      return { totalScanned: 0, denied: 0, review: 0, approved: 0, totalValue: 0, avgScore: 0 };
     }
     const denied = transactions.filter((t) => t.final_status === 'DENY').length;
     const review = transactions.filter((t) => t.final_status === 'FLAG_FOR_REVIEW').length;
-    const totalValue = transactions.reduce((acc, t) => acc + t.value_eth, 0);
-    const avgScore = transactions.length > 0 ? (transactions.reduce((acc, t) => acc + t.final_score, 0) / transactions.length) : 0;
-    return { totalFlagged: transactions.length, denied, review, totalValue, avgScore };
+    const approved = transactions.filter((t) => t.final_status === 'APPROVE').length; // Calculate approved count
+    const totalValue = transactions.reduce((acc, t) => acc + (t.value_eth || 0), 0);
+    const avgScore = transactions.length > 0
+        ? (transactions.reduce((acc, t) => acc + (t.final_score || 0), 0) / transactions.length)
+        : 0;
+
+    return {
+        totalScanned: transactions.length, // Changed from totalFlagged
+        denied,
+        review,
+        approved, // Include approved count
+        totalValue,
+        avgScore
+    };
   }, [transactions]);
 
-  // Handle transaction selection, clear detail if selected is removed/updated
+  // Handle transaction selection
   const handleRowClick = (tx) => {
     setSelectedTx(tx);
   };
 
-   // Check if the currently selected transaction still exists in the updated list
-  useEffect(() => { // <-- This is where useEffect was used without import
-    if (selectedTx && !transactions.find(tx => tx.tx_hash === selectedTx.tx_hash)) {
-      setSelectedTx(null); // Clear selection if it's gone
+   // Effect to update or clear selected transaction if the main list changes
+   useEffect(() => {
+    if (selectedTx) {
+      const updatedTxInList = transactions.find(tx => tx.tx_hash === selectedTx.tx_hash);
+      if (!updatedTxInList) {
+        setSelectedTx(null); // Clear selection if it's no longer in the list (e.g., due to MAX_TRANSACTIONS limit)
+      } else if (JSON.stringify(updatedTxInList) !== JSON.stringify(selectedTx)) {
+        // If the transaction data has changed (e.g., status updated via review), update the detail view
+        setSelectedTx(updatedTxInList);
+      }
     }
-     // Optionally update selectedTx if its details (like status) changed
-     else if (selectedTx) {
-         const updatedTx = transactions.find(tx => tx.tx_hash === selectedTx.tx_hash);
-         // Check if updatedTx exists and if it's actually different before updating state
-         if (updatedTx && JSON.stringify(updatedTx) !== JSON.stringify(selectedTx)) {
-             setSelectedTx(updatedTx);
-         }
-     }
   }, [transactions, selectedTx]);
 
 
-  // Initial loading state
+  // Initial loading state display
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        {/* Pass text prop to Loader */}
-        <Loader text="Loading Initial Data..." />
+        <Loader text="Loading Initial Transaction Data..." /> {/* Updated text */}
       </div>
     );
   }
 
-  // Error state *after* initial load attempt (if transactions remain empty)
+  // Error state display (if error occurred during initial load)
   if (error && transactions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center text-brand-gray bg-white p-8 rounded-lg shadow-md">
         <AlertCircle className="w-16 h-16 text-status-review-text mb-4" />
         <h2 className="text-2xl font-semibold text-slate-800 mb-2">Error Loading Data</h2>
         <p className="mb-4">
-          Could not load initial transaction data. Please check the backend status or try setting up again.
+          Could not load initial transaction data. Please check the backend connection and status, or try running the setup again.
         </p>
-        <p className="text-sm text-slate-500">({error})</p>
+        {/* Display specific error message */}
+        <p className="text-sm text-slate-500">({typeof error === 'string' ? error : 'Check console for details'})</p>
       </div>
     );
   }
 
-  // No transactions flagged yet (could be initial state or after running)
-  if (transactions.length === 0) {
+  // State when monitoring is active but no transactions have been scanned yet
+  if (!loading && transactions.length === 0 && !error) {
      return (
       <div className="flex flex-col items-center justify-center h-full text-center text-brand-gray bg-white p-8 rounded-lg shadow-md">
         <BarChart2 className="w-16 h-16 text-status-approve-text mb-4" />
-        <h2 className="text-2xl font-semibold text-slate-800 mb-2">Monitoring Active</h2>
-        <p>No suspicious transactions flagged yet. New flagged transactions will appear here automatically.</p>
-        {/* Show error here too, if applicable */}
-        {error && <p className="text-sm text-slate-500 mt-2">({error})</p>}
+        <h2 className="text-2xl font-semibold text-slate-800 mb-2">Monitoring Blockchain...</h2>
+        {/* Updated message */}
+        <p>Waiting for new transactions. Scanned transactions (including Approved, Flagged, and Denied) will appear here automatically.</p>
       </div>
     );
   }
 
-  // Main dashboard display
+  // Main dashboard display when transactions are available
   return (
     <div className="space-y-6">
-      {/* 1. Key Metrics */}
+      {/* 1. Key Metrics - Pass calculated stats */}
       <MetricsGrid stats={stats} />
 
       {/* 2. Charts */}
        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+        <div className="lg:col-span-1 bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex flex-col">
           <h3 className="text-lg font-semibold text-slate-800 mb-2">
             Average Risk Score
           </h3>
-          <RiskGauge score={stats.avgScore} />
+          <div className="flex-grow flex items-center justify-center">
+             <RiskGauge score={stats.avgScore} />
+          </div>
         </div>
-        <div className="lg:col-span-2 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+        <div className="lg:col-span-2 bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex flex-col">
           <h3 className="text-lg font-semibold text-slate-800 mb-2">
-            Status Distribution
+            Status Distribution (Scanned)
           </h3>
-          {/* Pass the calculated stats directly */}
-          <StatusDistribution data={stats} />
+           <div className="flex-grow flex items-center justify-center">
+             {/* Pass the calculated stats directly */}
+             <StatusDistribution data={stats} />
+           </div>
         </div>
       </div>
 
@@ -109,7 +122,7 @@ const DashboardPage = ({ transactions, loading, error, onSubmitReview }) => {
       {/* 3. Timeline Chart */}
        <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
          <h3 className="text-lg font-semibold text-slate-800 mb-2">
-            Risk Score Timeline (Last {transactions.length} Flagged)
+            Risk Score Timeline (Last {transactions.length} Scanned) {/* Updated Title */}
           </h3>
         {/* Ensure data passed to timeline is sorted chronologically (oldest first) */}
         <RiskTimeline data={[...transactions].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))} />
@@ -121,7 +134,7 @@ const DashboardPage = ({ transactions, loading, error, onSubmitReview }) => {
         <div className="xl:col-span-2 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
           <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold text-slate-800">
-                Flagged Transactions (Real-time)
+                Scanned Transactions (Real-time) {/* Updated Title */}
               </h3>
               {/* Optional: Manual refresh button (less needed now) */}
               {/* <button onClick={onRefresh} className="text-sm text-brand-blue hover:underline p-1"><RefreshCw className="w-4 h-4 inline mr-1"/> Refresh List</button> */}
@@ -133,12 +146,12 @@ const DashboardPage = ({ transactions, loading, error, onSubmitReview }) => {
           />
         </div>
         <div className="xl:col-span-1">
+          {/* Pass the specific loading state for reviews */}
           <TransactionDetail
             transaction={selectedTx}
             onClose={() => setSelectedTx(null)}
             onSubmitReview={onSubmitReview} // Pass down review function
-            // Pass the specific loading state for reviews if available from hook
-            // isLoadingReview={loading.review}
+            isLoadingReview={isLoadingReview} // Pass review loading state
           />
         </div>
       </div>

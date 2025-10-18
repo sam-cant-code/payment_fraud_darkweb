@@ -10,10 +10,11 @@ import os # Added for path checking
 
 # Import the network agent (assuming agent_3_network.py exists)
 try:
+    # This will now import the NEUTRALIZED version
     from agent_3_network import agent_3_network
 except ImportError:
     print("Warning: agent_3_network.py not found or contains errors. Agent 3 will be skipped.")
-    # Define a dummy function if agent 3 is missing
+    # Define a dummy function if agent 3 is missing (still good practice)
     def agent_3_network(transaction: Dict) -> Dict:
         transaction['agent_3_score'] = 0
         transaction['agent_3_reasons'] = ["Agent 3 skipped (module not found)"]
@@ -74,7 +75,7 @@ def agent_2_behavioral(transaction: Dict) -> Dict:
     score = 0
     reasons = []
     model_path = 'models/behavior_model.pkl'
-    db_path = 'data/wallet_profiles.db'
+    db_path = 'data/wallet_profiles.db' # Corrected path based on 0_setup_database.py usage
 
     if os.path.exists(model_path):
         try:
@@ -119,38 +120,61 @@ def agent_2_behavioral(transaction: Dict) -> Dict:
     transaction['agent_2_reasons'] = reasons
     return transaction
 
-# Agent 3 is imported
+# Agent 3 is imported (now the neutralized version)
 
+# MODIFIED AGENT 4
 def agent_4_decision(transaction: Dict) -> Dict:
     """
     Agent 4: Decision Aggregator
-    - Combines scores from all agents (1, 2, and 3)
-    - Makes final decision on transaction status
+    - Combines scores from agents 1 and 2.
+    - Agent 3 is now neutralized and its score is ignored.
+    - Makes final decision on transaction status.
     """
-    # ... (function remains the same as previous correct version) ...
     agent_1_score = transaction.get('agent_1_score', 0)
     agent_2_score = transaction.get('agent_2_score', 0)
-    agent_3_score = transaction.get('agent_3_score', 0)
-    final_score = (agent_1_score * 1.5) + (agent_2_score * 1.0) + (agent_3_score * 1.2)
+    agent_3_score = transaction.get('agent_3_score', 0) # Still fetched but not used in calculation
+
+    # --- REMOVED AGENT 3 SCORE FROM CALCULATION ---
+    # Original: final_score = (agent_1_score * 1.5) + (agent_2_score * 1.0) + (agent_3_score * 1.2)
+    final_score = (agent_1_score * 1.5) + (agent_2_score * 1.0)
+    # --- END CHANGE ---
+
     all_reasons = []
     all_reasons.extend(transaction.get('agent_1_reasons', []))
     all_reasons.extend(transaction.get('agent_2_reasons', []))
-    all_reasons.extend(transaction.get('agent_3_reasons', []))
-    final_score = min(final_score, 150.0) # Cap score
-    if final_score >= 80: status = "DENY"
-    elif final_score >= 40: status = "FLAG_FOR_REVIEW"
-    else: status = "APPROVE"
+    all_reasons.extend(transaction.get('agent_3_reasons', [])) # Keep Agent 3 reasons for logging/clarity
+
+    # --- ADJUST SCORE CAP (Optional but Recommended) ---
+    # The original cap was 150, including Agent 3.
+    # Without Agent 3, the theoretical max (if weights were 1) is 100 (50+50).
+    # With weights, it's (50*1.5) + (50*1.0) = 75 + 50 = 125 (approx).
+    # Let's adjust the cap to 130 to be safe.
+    final_score = min(final_score, 130.0) # Adjusted cap
+    # --- END ADJUSTMENT ---
+
+    # --- THRESHOLDS MIGHT NEED ADJUSTMENT (Optional) ---
+    # The original thresholds were 40 (Review) and 80 (Deny).
+    # Since the max score is lower without Agent 3, you *might* want to lower these.
+    # For now, we'll keep them the same, meaning fewer transactions will likely be Denied.
+    if final_score >= 80:
+        status = "DENY"
+    elif final_score >= 40:
+        status = "FLAG_FOR_REVIEW"
+    else:
+        status = "APPROVE"
+    # --- END THRESHOLD CONSIDERATION ---
+
     transaction['final_score'] = final_score
     transaction['final_status'] = status
     transaction['reasons'] = " | ".join(all_reasons) if all_reasons else "No specific issues detected"
     return transaction
 
-# --- MOVED PIPELINE FUNCTION ---
+# --- PIPELINE FUNCTION (No changes needed here) ---
 
 def process_transaction_pipeline(transaction: Dict) -> Dict:
     """
     Pass transaction through the complete agent pipeline:
-    Agent 1 (Monitor) -> Agent 2 (Behavioral) -> Agent 3 (Network) -> Agent 4 (Decision)
+    Agent 1 (Monitor) -> Agent 2 (Behavioral) -> Agent 3 (Network - Neutralized) -> Agent 4 (Decision)
     """
     # Agent 1: Threat Intelligence
     transaction = agent_1_monitor(transaction)
@@ -159,9 +183,9 @@ def process_transaction_pipeline(transaction: Dict) -> Dict:
     transaction = agent_2_behavioral(transaction)
 
     # Agent 3: Network Analysis
-    transaction = agent_3_network(transaction) # Uses the imported or dummy function
+    transaction = agent_3_network(transaction) # Uses the imported neutralized function
 
-    # Agent 4: Final Decision (Considers Agent 3)
+    # Agent 4: Final Decision (Considers only Agent 1 & 2 scores)
     transaction = agent_4_decision(transaction)
 
     return transaction
