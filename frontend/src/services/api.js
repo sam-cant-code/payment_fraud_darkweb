@@ -1,39 +1,41 @@
 import axios from 'axios';
+import { io } from 'socket.io-client';
 
-// Use the environment variable, with a fallback
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
+// Define the BASE URL (e.g., http://127.0.0.1:5000)
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000';
 
 const apiClient = axios.create({
-  baseURL: API_URL,
+  // Set baseURL to ONLY the host and port
+  baseURL: API_BASE_URL, // Corrected: Should be e.g., http://127.0.0.1:5000
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-/**
- * Fetches the current backend status.
- */
-export const getStatus = () => {
-  return apiClient.get('/status');
+// --- API Functions ---
+// Prepend '' to every request path
+export const getStatus = () => apiClient.get('/status');
+export const postRunSetup = () => apiClient.post('/setup');
+export const getFlaggedTransactions = () => apiClient.get('/flagged-transactions');
+export const getWalletProfile = (address) => apiClient.get(`/wallet/${address}`);
+export const postReview = (txHash, status, analystId = null) => {
+  const payload = { status };
+  if (analystId) payload.analyst_id = analystId;
+  return apiClient.post(`/review/${txHash}`, payload);
 };
+export const getThreats = () => apiClient.get('/threats');
+export const postThreat = (walletAddress) => apiClient.post('/threats', { wallet_address: walletAddress });
+export const deleteThreat = (walletAddress) => apiClient.delete('/threats', { data: { wallet_address: walletAddress } });
 
-/**
- * Runs the one-time database setup script.
- */
-export const postRunSetup = () => {
-  return apiClient.post('/setup');
-};
 
-/**
- * Runs the simulation script.
- */
-export const postRunSimulation = () => {
-  return apiClient.post('/run-simulation');
-};
+// --- WebSocket Connection ---
+// Socket connects to the BASE URL (without ) - this remains correct
+export const socket = io(API_BASE_URL, {
+    autoConnect: false,
+    transports: ['websocket']
+});
 
-/**
- * Fetches the list of flagged transactions.
- */
-export const getFlaggedTransactions = () => {
-  return apiClient.get('/flagged-transactions');
-};
+// Log socket events for debugging (optional)
+socket.onAny((event, ...args) => {
+  console.log("Socket Event:", event, args);
+});
