@@ -1,6 +1,6 @@
 """
 Agent Logic Module for Blockchain Fraud Detection MVP
-ROBUST VERSION with better path resolution
+FIXED: Uses ../ paths to store files in project root (matching initialize_and_train.py)
 """
 
 import pickle
@@ -11,59 +11,20 @@ from datetime import datetime, timedelta, UTC
 import numpy as np
 from pathlib import Path
 
-# --- ROBUST PATH RESOLUTION ---
-def get_backend_dir():
-    """Get the backend directory path reliably"""
-    # Try multiple methods to find backend directory
-    
-    # Method 1: From this file's location
-    current_file = Path(__file__).resolve()
-    
-    # If we're in backend/app/agents.py, go up to backend/
-    if current_file.parent.name == 'app':
-        return current_file.parent.parent
-    
-    # If we're directly in backend/
-    if current_file.parent.name == 'backend':
-        return current_file.parent
-    
-    # Method 2: From current working directory
-    cwd = Path.cwd()
-    
-    # If current dir is backend/
-    if cwd.name == 'backend':
-        return cwd
-    
-    # If backend/ is a subdirectory
-    backend_path = cwd / 'backend'
-    if backend_path.exists():
-        return backend_path
-    
-    # If we're in a subdirectory of backend
-    if (cwd / 'app').exists() or (cwd / 'scripts').exists():
-        return cwd
-    
-    # Method 3: Go up until we find backend/
-    check_path = cwd
-    for _ in range(5):  # Check up to 5 levels up
-        if check_path.name == 'backend' or (check_path / 'app').exists():
-            return check_path
-        check_path = check_path.parent
-    
-    # Fallback: Use current working directory
-    print(f"Warning: Could not reliably determine backend directory. Using: {cwd}")
-    return cwd
+# --- PATH CONFIGURATION ---
+# Since scripts run from backend/, we need ../ to reach project root
+SCRIPT_DIR = Path(__file__).resolve().parent  # backend/app/
+BACKEND_DIR = SCRIPT_DIR.parent  # backend/
+PROJECT_ROOT = BACKEND_DIR.parent  # project root
 
-BACKEND_DIR = get_backend_dir()
-MODEL_PATH = BACKEND_DIR / 'models' / 'fraud_model.pkl'
-SCALER_PATH = BACKEND_DIR / 'models' / 'scaler.pkl'
-DB_PATH = BACKEND_DIR / 'data' / 'wallet_profiles.db'
-THREAT_FILE_PATH = BACKEND_DIR / 'data' / 'dark_web_wallets.txt'
+# Files stored in PROJECT ROOT (one level up from backend/)
+MODEL_PATH = PROJECT_ROOT / 'models' / 'fraud_model.pkl'
+SCALER_PATH = PROJECT_ROOT / 'models' / 'scaler.pkl'
+DB_PATH = PROJECT_ROOT / 'data' / 'wallet_profiles.db'
+THREAT_FILE_PATH = PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'
 
-# Print paths on module load for debugging
-print(f"[agents.py] Backend directory: {BACKEND_DIR}")
+print(f"[agents.py] Project root: {PROJECT_ROOT}")
 print(f"[agents.py] Model path: {MODEL_PATH} (exists: {MODEL_PATH.exists()})")
-print(f"[agents.py] Scaler path: {SCALER_PATH} (exists: {SCALER_PATH.exists()})")
 
 # Import the neutralized network agent
 try:

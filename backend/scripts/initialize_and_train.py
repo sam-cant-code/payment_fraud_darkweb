@@ -298,16 +298,20 @@ def engineer_features(transactions):
 def train_fraud_model():
     """Train a SUPERVISED fraud detection model with improved parameters"""
     print("\n=== Training Fraud Detection Model (Supervised Learning) ===")
-    transactions_filepath = 'data/mock_blockchain_transactions.json'  # Changed from '../data/...'
-    model_filepath = 'models/fraud_model.pkl'  # Changed from '../models/...'
-    scaler_filepath = 'models/scaler.pkl'  # Changed from '../models/...'
+    
+    # --- FIX 1: Correct file paths to point to the parent data/ and models/ directories ---
+    transactions_filepath = '../data/mock_blockchain_transactions.json'
+    model_filepath = '../models/fraud_model.pkl'
+    scaler_filepath = '../models/scaler.pkl'
     
     
     try:
         with open(transactions_filepath, 'r') as f:
             transactions = json.load(f)
+        print(f"✓ Loaded transactions from: {transactions_filepath}")
     except FileNotFoundError:
         print(f"Error: {transactions_filepath} not found.")
+        print("Please ensure mock data was created successfully.")
         return
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON: {e}")
@@ -399,8 +403,11 @@ def train_fraud_model():
         os.makedirs(os.path.dirname(model_filepath), exist_ok=True)
         with open(model_filepath, 'wb') as f:
             pickle.dump(model, f)
-        with open(scaler_path, 'wb') as f:
+        
+        # --- FIX 2: Correct the variable name from scaler_path to scaler_filepath ---
+        with open(scaler_filepath, 'wb') as f:
             pickle.dump(scaler, f)
+            
         print(f"\n✓ Model saved to: {model_filepath}")
         print(f"✓ Scaler saved to: {scaler_filepath}")
     except Exception as e:
