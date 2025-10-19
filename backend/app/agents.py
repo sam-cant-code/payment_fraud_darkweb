@@ -1,6 +1,6 @@
 """
 Agent Logic Module for Blockchain Fraud Detection MVP
-FIXED: Uses ../ paths to store files in project root (matching initialize_and_train.py)
+IMPROVED VERSION - Calibrated for better accuracy with reduced false positives
 """
 
 import pickle
@@ -12,12 +12,11 @@ import numpy as np
 from pathlib import Path
 
 # --- PATH CONFIGURATION ---
-# Since scripts run from backend/, we need ../ to reach project root
 SCRIPT_DIR = Path(__file__).resolve().parent  # backend/app/
 BACKEND_DIR = SCRIPT_DIR.parent  # backend/
 PROJECT_ROOT = BACKEND_DIR.parent  # project root
 
-# Files stored in PROJECT ROOT (one level up from backend/)
+# Files stored in PROJECT ROOT
 MODEL_PATH = PROJECT_ROOT / 'models' / 'fraud_model.pkl'
 SCALER_PATH = PROJECT_ROOT / 'models' / 'scaler.pkl'
 DB_PATH = PROJECT_ROOT / 'data' / 'wallet_profiles.db'
@@ -74,7 +73,10 @@ def load_dark_web_wallets(force_reload: bool = False) -> set:
 
 
 def agent_1_monitor(transaction: Dict) -> Dict:
-    """Agent 1: Threat Intelligence Engine"""
+    """
+    Agent 1: Threat Intelligence Engine
+    IMPROVED: Calibrated scoring to reduce false positives
+    """
     score = 0
     reasons = []
     dark_web_wallets = load_dark_web_wallets()
@@ -83,37 +85,58 @@ def agent_1_monitor(transaction: Dict) -> Dict:
     value_eth = transaction.get('value_eth', 0.0)
     timestamp_str = transaction.get('timestamp')
 
-    # Known Threat List Check
+    # =====================================================
+    # Known Threat List Check - REDUCED SCORES
+    # =====================================================
     if from_addr in dark_web_wallets:
-        score += 60
+        score += 50  # Was 60
         reasons.append(f"From-Wallet ({from_addr[:10]}...) on Threat List")
+    
     if to_addr in dark_web_wallets:
         if to_addr in KNOWN_MIXER_ADDRESSES:
-            score += 70
+            score += 60  # Was 70
             reasons.append(f"To-Wallet ({to_addr[:10]}...) is a known Mixer")
         else:
-            score += 60
+            score += 50  # Was 60
             reasons.append(f"To-Wallet ({to_addr[:10]}...) on Threat List")
 
-    # High Value Check
-    if value_eth > 100:
-        score += 40
+    # =====================================================
+    # High Value Check - RECALIBRATED THRESHOLDS
+    # =====================================================
+    if value_eth > 150:
+        # Extremely high value
+        score += 35  # Was 40
+        reasons.append(f"Extremely high-value transaction: {value_eth:.4f} ETH")
+    elif value_eth > 100:
+        # Very high value
+        score += 28  # Was 40
         reasons.append(f"Very high-value transaction: {value_eth:.4f} ETH")
-    elif value_eth > 50:
-        score += 25
+    elif value_eth > 70:
+        # High value
+        score += 20  # Was 25
         reasons.append(f"High-value transaction: {value_eth:.4f} ETH")
-    elif value_eth > 30:
-        score += 15
+    elif value_eth > 50:
+        # Elevated value
+        score += 15  # Was 25
         reasons.append(f"Elevated-value transaction: {value_eth:.4f} ETH")
+    elif value_eth > 30:
+        # Moderate-high value
+        score += 8  # Was 15
+        reasons.append(f"Moderate-high value transaction: {value_eth:.4f} ETH")
 
-    # Zero Value Check
+    # =====================================================
+    # Zero Value Check - REDUCED IMPACT
+    # =====================================================
     if value_eth == 0.0 and transaction.get('gas_price', 0) > 0:
-        score += 3
+        score += 2  # Was 3
         reasons.append("Zero ETH value transaction")
 
-    # Small Repetitive Transfers
+    # =====================================================
+    # Small Repetitive Transfers - SLIGHTLY REDUCED
+    # =====================================================
     if value_eth > 0 and value_eth < SMALL_TRANSFER_VALUE and from_addr:
         now = datetime.now(UTC)
+        
         if from_addr in RECENT_SMALL_TRANSFERS:
             RECENT_SMALL_TRANSFERS[from_addr] = [
                 ts for ts in RECENT_SMALL_TRANSFERS[from_addr] if now - ts <= TRANSFER_WINDOW
@@ -133,14 +156,32 @@ def agent_1_monitor(transaction: Dict) -> Dict:
 
         count = len(RECENT_SMALL_TRANSFERS[from_addr])
         if count >= TRANSFER_THRESHOLD:
-            score += 20
+            score += 18  # Was 20
             reasons.append(f"High frequency of small transfers ({count})")
 
-    # High Gas Price Check
+    # =====================================================
+    # High Gas Price Check - RECALIBRATED
+    # =====================================================
     gas_price = transaction.get('gas_price', 0.0)
-    if gas_price > 200:
-        score += 15
-        reasons.append(f"Unusually high gas price: {gas_price:.2f} Gwei")
+    if gas_price > 300:
+        # Extremely high gas
+        score += 20  # Was 15
+        reasons.append(f"Extremely high gas price: {gas_price:.2f} Gwei")
+    elif gas_price > 200:
+        # Very high gas
+        score += 12  # Was 15
+        reasons.append(f"Very high gas price: {gas_price:.2f} Gwei")
+    elif gas_price > 150:
+        # High gas
+        score += 6
+        reasons.append(f"High gas price: {gas_price:.2f} Gwei")
+
+    # =====================================================
+    # Suspicious Pattern: Self-Transfer
+    # =====================================================
+    if from_addr and to_addr and from_addr == to_addr and value_eth > 0:
+        score += 8
+        reasons.append("Self-transfer detected")
 
     transaction['agent_1_score'] = score
     transaction['agent_1_reasons'] = reasons
@@ -148,7 +189,10 @@ def agent_1_monitor(transaction: Dict) -> Dict:
 
 
 def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
-    """Engineer features for prediction"""
+    """
+    Engineer features for ML prediction
+    Must match training features exactly
+    """
     from_addr = transaction.get('from_address', '').lower()
     to_addr = transaction.get('to_address', '').lower()
     value = transaction.get('value_eth', 0.0)
@@ -201,11 +245,16 @@ def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
 
 
 def agent_2_behavioral(transaction: Dict) -> Dict:
-    """Agent 2: Behavioral Profiler with ML"""
+    """
+    Agent 2: Behavioral Profiler with Machine Learning
+    IMPROVED: Calibrated ML scoring and better historical profiling
+    """
     score = 0
     reasons = []
 
-    # ML Model Prediction
+    # =====================================================
+    # ML Model Prediction - CALIBRATED SCORING
+    # =====================================================
     if MODEL_PATH.exists() and SCALER_PATH.exists():
         try:
             with open(MODEL_PATH, 'rb') as f:
@@ -220,52 +269,121 @@ def agent_2_behavioral(transaction: Dict) -> Dict:
             probability = model.predict_proba(features_scaled)[0]
             fraud_probability = probability[1] if len(probability) > 1 else 0.0
             
-            ml_risk_score = int(fraud_probability * 60)
-            
-            if prediction == 1 or fraud_probability > 0.3:
+            # IMPROVED: Graduated probability bands
+            if fraud_probability >= 0.80:
+                ml_risk_score = 50
+                score += ml_risk_score
+                reasons.append(f"ML Model: Very high fraud probability ({fraud_probability:.2%})")
+                
+            elif fraud_probability >= 0.65:
+                ml_risk_score = 40
                 score += ml_risk_score
                 reasons.append(f"ML Model: High fraud probability ({fraud_probability:.2%})")
-            elif fraud_probability > 0.15:
-                score += int(ml_risk_score * 0.8)
+                
+            elif fraud_probability >= 0.50:
+                ml_risk_score = 30
+                score += ml_risk_score
+                reasons.append(f"ML Model: Moderate-high fraud probability ({fraud_probability:.2%})")
+                
+            elif fraud_probability >= 0.35:
+                ml_risk_score = 20
+                score += ml_risk_score
                 reasons.append(f"ML Model: Moderate fraud probability ({fraud_probability:.2%})")
+                
+            elif fraud_probability >= 0.25:
+                ml_risk_score = 10
+                score += ml_risk_score
+                reasons.append(f"ML Model: Low-moderate fraud probability ({fraud_probability:.2%})")
+            
+            # Store for analysis
+            transaction['ml_fraud_probability'] = round(fraud_probability, 4)
                 
         except Exception as e:
             print(f"Warning: Error using ML model: {e}")
     else:
         print(f"Warning: Model files not found at {MODEL_PATH}")
 
-    # Historical Profile Check
+    # =====================================================
+    # Historical Profile Check - REFINED SCORING
+    # =====================================================
     if DB_PATH.exists():
         try:
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
             from_addr = transaction.get('from_address', '')
+            
             if from_addr:
                 cursor.execute(
-                    "SELECT avg_transaction_value FROM wallet_profiles WHERE wallet_address = ?",
+                    "SELECT avg_transaction_value, transaction_count FROM wallet_profiles WHERE wallet_address = ?",
                     (from_addr.lower(),)
                 )
                 result = cursor.fetchone()
+                
                 if result and result[0] is not None:
-                    avg_value = result[0]
+                    avg_value = float(result[0])
+                    tx_count = int(result[1]) if result[1] else 0
                     current_value = transaction.get('value_eth', 0.0)
+                    
                     if avg_value > 0.0001:
                         deviation_ratio = current_value / avg_value
-                        if deviation_ratio > 10:
-                            score += 35
-                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg")
+                        
+                        # IMPROVED: More nuanced deviation bands
+                        if deviation_ratio > 15:
+                            score += 40
+                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg (extreme deviation)")
+                        elif deviation_ratio > 10:
+                            score += 30
+                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg (very high deviation)")
+                        elif deviation_ratio > 7:
+                            score += 22
+                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg (high deviation)")
                         elif deviation_ratio > 5:
-                            score += 20
-                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg")
+                            score += 15
+                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg (moderate-high deviation)")
                         elif deviation_ratio > 3:
+                            score += 8
+                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg (moderate deviation)")
+                        
+                        # Check low-activity + high value
+                        if tx_count < 10 and current_value > 10:
                             score += 12
-                            reasons.append(f"Value {deviation_ratio:.1f}x higher than avg")
+                            reasons.append(f"High value from low-activity wallet ({tx_count} txs)")
+                    
                     elif current_value > 1:
+                        score += 18
+                        reasons.append(f"Significant value from near-zero avg wallet")
+                
+                else:
+                    # Unknown wallet with high value
+                    current_value = transaction.get('value_eth', 0.0)
+                    if current_value > 20:
                         score += 15
-                        reasons.append(f"Significant value from low-activity wallet")
+                        reasons.append(f"High-value transaction from unknown wallet")
+            
             conn.close()
         except Exception as e:
             print(f"Warning: DB error: {e}")
+
+    # =====================================================
+    # Behavioral Pattern Analysis
+    # =====================================================
+    value = transaction.get('value_eth', 0.0)
+    gas_price = transaction.get('gas_price', 0.0)
+    
+    # Round number transactions
+    if value > 0:
+        round_numbers = [1.0, 5.0, 10.0, 50.0, 100.0]
+        if any(abs(value - rn) < 0.001 for rn in round_numbers):
+            score += 3
+            reasons.append(f"Round number transaction ({value} ETH)")
+    
+    # Low gas for high value
+    if value > 10 and gas_price < 20:
+        score += 5
+        reasons.append(f"Unusually low gas ({gas_price:.1f} Gwei) for high value")
+    
+    # Cap score
+    score = min(score, 100)
 
     transaction['agent_2_score'] = score
     transaction['agent_2_reasons'] = reasons
@@ -273,12 +391,16 @@ def agent_2_behavioral(transaction: Dict) -> Dict:
 
 
 def agent_4_decision(transaction: Dict) -> Dict:
-    """Agent 4: Decision Aggregator"""
+    """
+    Agent 4: Decision Aggregator
+    IMPROVED: Balanced weights and higher thresholds
+    """
     agent_1_score = transaction.get('agent_1_score', 0)
     agent_2_score = transaction.get('agent_2_score', 0)
     agent_3_score = transaction.get('agent_3_score', 0)
 
-    final_score = (agent_1_score * 1.2) + (agent_2_score * 1.5) + (agent_3_score * 0.5)
+    # IMPROVED: Balanced weighting (reduced ML dominance)
+    final_score = (agent_1_score * 1.0) + (agent_2_score * 1.0) + (agent_3_score * 0.5)
 
     all_reasons = []
     all_reasons.extend(transaction.get('agent_1_reasons', []))
@@ -287,8 +409,9 @@ def agent_4_decision(transaction: Dict) -> Dict:
 
     final_score = round(min(final_score, 150.0), 1)
 
-    DENY_THRESHOLD = 40
-    REVIEW_THRESHOLD = 20
+    # IMPROVED: Higher thresholds to reduce false positives
+    DENY_THRESHOLD = 70      # Was 40
+    REVIEW_THRESHOLD = 45    # Was 20
 
     if final_score >= DENY_THRESHOLD:
         status = "DENY"
@@ -305,7 +428,9 @@ def agent_4_decision(transaction: Dict) -> Dict:
 
 
 def process_transaction_pipeline(transaction: Dict) -> Dict:
-    """Pass transaction through the complete agent pipeline"""
+    """
+    Pass transaction through the complete agent pipeline
+    """
     is_fraud_label = transaction.get('is_fraud')
 
     processed_tx = agent_1_monitor(transaction.copy())
@@ -317,3 +442,93 @@ def process_transaction_pipeline(transaction: Dict) -> Dict:
         processed_tx['is_fraud'] = is_fraud_label
 
     return processed_tx
+
+
+def get_system_thresholds():
+    """
+    Returns current system thresholds for documentation/UI
+    """
+    return {
+        "agent_4_decision": {
+            "deny_threshold": 70,
+            "review_threshold": 45,
+            "approve_threshold": 0
+        },
+        "agent_1_threat": {
+            "threat_list_match": 50,
+            "mixer_match": 60,
+            "very_high_value": 28,
+            "high_gas": 12
+        },
+        "agent_2_behavioral": {
+            "ml_very_high": 50,
+            "ml_high": 40,
+            "ml_moderate": 30,
+            "extreme_deviation": 40,
+            "high_deviation": 22
+        }
+    }
+
+
+def analyze_transaction(tx_hash: str, transaction: Dict) -> Dict:
+    """
+    Detailed analysis function for debugging
+    Returns breakdown of all agent scores
+    """
+    processed = process_transaction_pipeline(transaction.copy())
+    
+    analysis = {
+        "tx_hash": tx_hash,
+        "final_status": processed.get('final_status'),
+        "final_score": processed.get('final_score'),
+        "breakdown": {
+            "agent_1": {
+                "score": processed.get('agent_1_score', 0),
+                "reasons": processed.get('agent_1_reasons', [])
+            },
+            "agent_2": {
+                "score": processed.get('agent_2_score', 0),
+                "reasons": processed.get('agent_2_reasons', []),
+                "ml_probability": processed.get('ml_fraud_probability', 0)
+            },
+            "agent_3": {
+                "score": processed.get('agent_3_score', 0),
+                "reasons": processed.get('agent_3_reasons', [])
+            }
+        },
+        "transaction_data": {
+            "from": transaction.get('from_address'),
+            "to": transaction.get('to_address'),
+            "value": transaction.get('value_eth'),
+            "gas": transaction.get('gas_price')
+        }
+    }
+    
+    return analysis
+
+
+# Test function
+if __name__ == "__main__":
+    print("Testing Agent Pipeline...")
+    print("=" * 60)
+    
+    test_tx = {
+        "tx_hash": "0xtest123",
+        "from_address": "0xnorm000000000000000000000000000000000000",
+        "to_address": "0xnorm000000000000000000000000000000000001",
+        "value_eth": 2.5,
+        "gas_price": 50.0,
+        "timestamp": "2025-10-19T12:00:00Z",
+        "is_fraud": 0
+    }
+    
+    result = process_transaction_pipeline(test_tx)
+    
+    print(f"Final Status: {result['final_status']}")
+    print(f"Final Score: {result['final_score']}")
+    print(f"\nAgent Scores:")
+    print(f"  Agent 1: {result['agent_1_score']}")
+    print(f"  Agent 2: {result['agent_2_score']}")
+    print(f"  Agent 3: {result['agent_3_score']}")
+    print(f"\nReasons: {result['reasons']}")
+    print("=" * 60)
