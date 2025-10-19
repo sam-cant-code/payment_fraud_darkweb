@@ -296,11 +296,12 @@ def engineer_features(transactions):
 
 
 def train_fraud_model():
-    """Train a SUPERVISED fraud detection model with proper evaluation"""
+    """Train a SUPERVISED fraud detection model with improved parameters"""
     print("\n=== Training Fraud Detection Model (Supervised Learning) ===")
-    transactions_filepath = '../data/mock_blockchain_transactions.json'
-    model_filepath = '../models/fraud_model.pkl'
-    scaler_filepath = '../models/scaler.pkl'
+    transactions_filepath = 'data/mock_blockchain_transactions.json'  # Changed from '../data/...'
+    model_filepath = 'models/fraud_model.pkl'  # Changed from '../models/...'
+    scaler_filepath = 'models/scaler.pkl'  # Changed from '../models/...'
+    
     
     try:
         with open(transactions_filepath, 'r') as f:
@@ -330,20 +331,22 @@ def train_fraud_model():
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
-    print("\n✓ Applying SMOTE to handle class imbalance...")
-    smote = SMOTE(random_state=42)
+    print("\n✓ Applying SMOTE with conservative ratio...")
+    # Use a less aggressive SMOTE ratio
+    smote = SMOTE(random_state=42, sampling_strategy=0.5)  # Only oversample to 50% of majority
     X_train_balanced, y_train_balanced = smote.fit_resample(X_train_scaled, y_train)
     print(f"  After SMOTE: {len(X_train_balanced)} samples")
     
-    print("\n✓ Training Random Forest Classifier...")
+    print("\n✓ Training Random Forest with better recall focus...")
     model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=15,
-        min_samples_split=5,
-        min_samples_leaf=2,
-        class_weight='balanced',
+        n_estimators=300,  # Increased from 200
+        max_depth=20,  # Increased from 15 for more complexity
+        min_samples_split=3,  # Reduced from 5 for finer splits
+        min_samples_leaf=1,  # Reduced from 2
+        class_weight={0: 1, 1: 3},  # Give more weight to fraud class
         random_state=42,
-        n_jobs=-1
+        n_jobs=-1,
+        max_features='sqrt'  # Add this for better generalization
     )
     
     model.fit(X_train_balanced, y_train_balanced)
@@ -355,11 +358,18 @@ def train_fraud_model():
     y_pred = model.predict(X_test_scaled)
     y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
     
-    print("\nClassification Report:")
+    # Adjust decision threshold for better recall
+    # Instead of 0.5, use 0.3 as threshold
+    y_pred_adjusted = (y_pred_proba >= 0.3).astype(int)
+    
+    print("\nClassification Report (Standard Threshold 0.5):")
     print(classification_report(y_test, y_pred, target_names=['Normal', 'Fraud']))
     
-    print("\nConfusion Matrix:")
-    cm = confusion_matrix(y_test, y_pred)
+    print("\nClassification Report (Adjusted Threshold 0.3 for better recall):")
+    print(classification_report(y_test, y_pred_adjusted, target_names=['Normal', 'Fraud']))
+    
+    print("\nConfusion Matrix (Adjusted Threshold):")
+    cm = confusion_matrix(y_test, y_pred_adjusted)
     print(f"                Predicted")
     print(f"              Normal  Fraud")
     print(f"Actual Normal   {cm[0][0]:4d}   {cm[0][1]:4d}")
@@ -389,7 +399,7 @@ def train_fraud_model():
         os.makedirs(os.path.dirname(model_filepath), exist_ok=True)
         with open(model_filepath, 'wb') as f:
             pickle.dump(model, f)
-        with open(scaler_filepath, 'wb') as f:
+        with open(scaler_path, 'wb') as f:
             pickle.dump(scaler, f)
         print(f"\n✓ Model saved to: {model_filepath}")
         print(f"✓ Scaler saved to: {scaler_filepath}")

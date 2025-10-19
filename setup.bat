@@ -103,9 +103,8 @@ echo  - Threat list (backend/data/dark_web_wallets.txt)
 echo  - Mock transaction data (backend/data/mock_blockchain_transactions.json)
 echo.
 echo Next steps:
-echo  1. [OPTIONAL] Run 'npm install' in the 'frontend' directory
+echo  1. Run 'run_accuracy_check.bat' to test the system
 echo  2. Run 'start_backend.bat' to start the API server
-echo  3. Run 'run_accuracy_check.bat' to test the system
-echo  4. [OPTIONAL] In a NEW terminal, run 'npm run dev' in frontend
+echo  3. [OPTIONAL] Run 'npm install' then 'npm run dev' in frontend/
 echo.
 pause
