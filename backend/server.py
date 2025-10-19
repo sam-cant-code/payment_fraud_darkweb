@@ -20,15 +20,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import agent logic
-from agents import process_transaction_pipeline, load_dark_web_wallets
+from app.agents import process_transaction_pipeline, load_dark_web_wallets # <--- THIS IS THE FIX
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/socket.io/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-OUTPUT_FILE = 'output/all_processed_transactions.csv' # Renamed for clarity
-DB_FILE = 'data/wallet_profiles.db' # Path used by agents and setup
-THREAT_FILE = 'data/dark_web_wallets.txt'
+OUTPUT_FILE = '../output/all_processed_transactions.csv' # <-- FIXED PATH
+DB_FILE = '../data/wallet_profiles.db' # <-- FIXED PATH
+THREAT_FILE = '../data/dark_web_wallets.txt' # <-- FIXED PATH
 PYTHON_EXE = 'python'
 
 # --- Alchemy Configuration ---
@@ -246,9 +246,9 @@ def handle_connect():
         alchemy_thread = threading.Thread(target=alchemy_listener_loop, daemon=True)
         alchemy_thread.start()
     # Emit current status on connect
-    db_ready = os.path.exists('data/wallet_profiles.db')
-    threat_ready = os.path.exists(THREAT_FILE)
-    output_exists = os.path.exists(OUTPUT_FILE) and os.path.getsize(OUTPUT_FILE) > 50
+    db_ready = os.path.exists(DB_FILE) # <-- FIXED PATH
+    threat_ready = os.path.exists(THREAT_FILE) # <-- FIXED PATH
+    output_exists = os.path.exists(OUTPUT_FILE) and os.path.getsize(OUTPUT_FILE) > 50 # <-- FIXED PATH
     emit('status_update', {
         'websocket_connected': True,
         'listener_active': alchemy_listener_running,
@@ -268,9 +268,9 @@ def handle_disconnect():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     # ... (function remains the same as previous corrected version) ...
-    db_file_exists = os.path.exists('data/wallet_profiles.db')
-    threat_file_exists = os.path.exists(THREAT_FILE)
-    output_file_exists = os.path.exists(OUTPUT_FILE)
+    db_file_exists = os.path.exists(DB_FILE) # <-- FIXED PATH
+    threat_file_exists = os.path.exists(THREAT_FILE) # <-- FIXED PATH
+    output_file_exists = os.path.exists(OUTPUT_FILE) # <-- FIXED PATH
     has_data = output_file_exists and os.path.getsize(OUTPUT_FILE) > 50
 
     return jsonify({
@@ -286,7 +286,8 @@ def get_status():
 def run_setup():
     # ... (function remains the same as previous corrected version) ...
     try:
-        result = subprocess.run([PYTHON_EXE, '0_setup_database.py'], capture_output=True, text=True, check=True)
+        # Use the NEW script name
+        result = subprocess.run([PYTHON_EXE, 'scripts/initialize_and_train.py'], capture_output=True, text=True, check=True)
         print(result.stdout)
 
         # Ensure the output CSV exists with headers (using global fieldnames)
@@ -302,7 +303,7 @@ def run_setup():
         print(f"Setup Error Output: {e.stderr}")
         return jsonify({"error": f"An error occurred during setup: {e.stderr}"}), 500
     except FileNotFoundError:
-        return jsonify({"error": f"'{PYTHON_EXE}' or '0_setup_database.py' not found."}), 500
+        return jsonify({"error": f"'{PYTHON_EXE}' or 'scripts/initialize_and_train.py' not found."}), 500
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred during setup: {str(e)}"}), 500
 
@@ -355,7 +356,7 @@ def get_flagged_transactions():
 @app.route('/api/wallet/<address>', methods=['GET'])
 def get_wallet_profile(address):
     # ... (function remains the same) ...
-    profile_db_path = 'data/wallet_profiles.db'
+    profile_db_path = DB_FILE # <-- FIXED PATH
     if not os.path.exists(profile_db_path):
         return jsonify({"error": "Wallet profiles database not found. Run setup."}), 404
     try:
@@ -461,15 +462,21 @@ def remove_threat():
 
 # --- Main Execution ---
 if __name__ == '__main__':
-    # ... (Directory creation and setup checks remain the same) ...
-    os.makedirs('data', exist_ok=True)
-    os.makedirs('output', exist_ok=True)
-    os.makedirs('models', exist_ok=True)
+    # --- IMPORTANT ---
+    # Since this script is in backend/, and our data is in data/ (one level up),
+    # we need to make sure the paths are correct.
+    # The '../data' paths set at the top handle this, but for the
+    # initial startup check, we'll use the same relative paths.
+    
+    # We are in 'backend/', so we check '../data', '../output', etc.
+    os.makedirs('../data', exist_ok=True)
+    os.makedirs('../output', exist_ok=True)
+    os.makedirs('../models', exist_ok=True)
 
-    if not os.path.exists('data/wallet_profiles.db') or not os.path.exists(THREAT_FILE) or not os.path.exists('models/behavior_model.pkl'):
+    if not os.path.exists(DB_FILE) or not os.path.exists(THREAT_FILE) or not os.path.exists('../models/behavior_model.pkl'): # <-- FIXED PATH
         print("-" * 60)
         print("Warning: One or more data/model files missing.")
-        print("Please run the setup script ('setup.bat' or 'python backend/0_setup_database.py')")
+        print("Please run the setup script ('setup.bat' or 'python scripts/initialize_and_train.py')") # <-- FIXED SCRIPT NAME
         print("before starting the backend to ensure proper functionality.")
         print("-" * 60)
 

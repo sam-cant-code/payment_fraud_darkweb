@@ -1,13 +1,12 @@
 @echo off
 REM ============================================================
-REM NEW Setup Script for Backend (Python/Flask)
+REM NEW Setup Script for Backend (Python)
 REM ============================================================
 
 echo ============================================================
 echo SETTING UP PYTHON BACKEND
 echo ============================================================
 echo.
-
 REM Navigate into the backend directory
 cd backend
 if errorlevel 1 (
@@ -30,7 +29,6 @@ if errorlevel 1 (
 echo [2/5] Python found: 
 python --version
 echo.
-
 REM Create virtual environment
 echo [3/5] Creating virtual environment 'venv'...
 if exist "venv" (
@@ -40,7 +38,6 @@ if exist "venv" (
     echo     - Created: venv/
 )
 echo.
-
 REM Activate virtual environment and install packages
 echo [4/5] Activating virtual environment and installing packages...
 call venv\Scripts\activate.bat
@@ -62,9 +59,9 @@ if errorlevel 1 (
 echo     - All backend dependencies installed.
 echo.
 
-REM Run the one-time database setup
+REM Run the one-time database and model setup
 echo [5/5] Running initial database and model setup...
-python 0_setup_database.py
+python scripts/initialize_and_train.py
 echo.
 
 echo ============================================================
@@ -74,6 +71,6 @@ echo.
 echo Next steps:
 echo 1. Run 'npm install' in the 'frontend' directory.
 echo 2. Run 'start_backend.bat' in this root folder.
-echo 3. In a NEW terminal, run 'start_frontend.bat' in this root folder.
+echo 3. In a NEW terminal, run 'npm run dev' in the 'frontend' folder.
 echo.
 pause

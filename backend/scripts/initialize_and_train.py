@@ -39,7 +39,8 @@ COMBINED_THREAT_LIST = list(MALICIOUS_WALLETS | MIXER_ADDRESSES)
 
 def create_directories():
     """Create necessary directories if they don't exist"""
-    directories = ['data', 'models', 'output']
+    # Go up one level from 'backend/'
+    directories = ['../data', '../models', '../output']
     for directory in directories:
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -48,7 +49,7 @@ def create_directories():
 def create_mock_transactions():
     """Create enhanced mock blockchain transactions JSON file WITH is_fraud labels"""
     print("\n=== Creating Enhanced Mock Blockchain Transactions ===")
-    filepath = 'data/mock_blockchain_transactions.json'
+    filepath = '../data/mock_blockchain_transactions.json' # <-- FIXED PATH
 
     # Use the globally defined wallet lists
     malicious_wallets = ALL_MALICIOUS_LIST
@@ -185,7 +186,7 @@ def create_dark_web_wallet_list(threat_wallets): # Takes the combined list
     """Create dark web wallet threat intelligence file"""
     if not threat_wallets:
         print("No threat wallets provided. Skipping dark web list creation.")
-        filepath = 'data/dark_web_wallets.txt'
+        filepath = '../data/dark_web_wallets.txt' # <-- FIXED PATH
         try:
             with open(filepath, 'w') as f: pass
             print(f"Created/Emptied dark web wallet list: {filepath}")
@@ -193,7 +194,7 @@ def create_dark_web_wallet_list(threat_wallets): # Takes the combined list
         return
 
     print("\n=== Creating Dark Web Wallet List ===")
-    filepath = 'data/dark_web_wallets.txt'
+    filepath = '../data/dark_web_wallets.txt' # <-- FIXED PATH
     try:
         # Use the combined list passed as argument
         with open(filepath, 'w') as f:
@@ -208,7 +209,7 @@ def create_wallet_profiles_db(normal_wallets):
         print("No normal wallets provided. Skipping wallet profile DB creation.")
         return
     print("\n=== Creating Wallet Profiles Database ===")
-    filepath = 'data/wallet_profiles.db'; conn = None
+    filepath = '../data/wallet_profiles.db'; conn = None # <-- FIXED PATH
     try:
         conn = sqlite3.connect(filepath); cursor = conn.cursor()
         cursor.execute("DROP TABLE IF EXISTS wallet_profiles")
@@ -241,8 +242,8 @@ def create_wallet_profiles_db(normal_wallets):
 def train_behavior_model():
     """Train IsolationForest model ONLY on NORMAL blockchain transaction features"""
     print("\n=== Training Behavior Model (on Normal Data Only) ===")
-    transactions_filepath = 'data/mock_blockchain_transactions.json'
-    model_filepath = 'models/behavior_model.pkl'
+    transactions_filepath = '../data/mock_blockchain_transactions.json' # <-- FIXED PATH
+    model_filepath = '../models/behavior_model.pkl' # <-- FIXED PATH
     try:
         with open(transactions_filepath, 'r') as f:
             transactions = json.load(f)
@@ -304,12 +305,12 @@ def main():
     print("=" * 60)
     print("\nNext steps:")
     print("1. Ensure frontend dependencies are installed (`npm install` in 'frontend').")
-    print("2. Run `start_backend.bat` (or `python backend/app.py`).")
-    print("3. In a new terminal, run `start_frontend.bat` (or `npm run dev` in 'frontend').")
+    print("2. Run `start_backend.bat` (or `python backend/server.py`).") # <-- FIXED SCRIPT NAME
+    print("3. In a new terminal, run `npm run dev` in 'frontend'.")
     print("4. To process mock data & check accuracy:")
     print("   a. Activate backend venv: `cd backend` then `.\\venv\\Scripts\\activate` (Win) or `source venv/bin/activate` (Mac/Linux)")
-    print("   b. Run simulation on mock data: `python 1_run_simulation.py`")
-    print("   c. Calculate accuracy: `python 3_calculate_accuracy.py`")
+    print("   b. Run simulation on mock data: `python scripts/run_simulation.py`") # <-- FIXED SCRIPT NAME
+    print("   c. Calculate accuracy: `python scripts/calculate_accuracy.py`") # <-- FIXED SCRIPT NAME
     print("=" * 60)
 
 if __name__ == "__main__":

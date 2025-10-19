@@ -6,11 +6,11 @@ Processes transactions through the agent pipeline (for batch processing)
 import json
 import csv
 import os
-from datetime import datetime # Added for potential use, though not strictly needed now
-# Import the pipeline function FROM agents.py
-from agents import process_transaction_pipeline
+from datetime import datetime
+# Import the pipeline function FROM app.agents
+from app.agents import process_transaction_pipeline # <--- THIS IS THE FIX
 
-def load_transactions(filepath='data/mock_blockchain_transactions.json'):
+def load_transactions(filepath='../data/mock_blockchain_transactions.json'): # <-- FIXED PATH
     """Load transactions from JSON file (expects 'is_fraud' label now)"""
     try:
         with open(filepath, 'r') as f:
@@ -18,7 +18,7 @@ def load_transactions(filepath='data/mock_blockchain_transactions.json'):
         print(f"Loaded {len(transactions)} transactions from {filepath}")
         return transactions
     except FileNotFoundError:
-        print(f"Error: {filepath} not found. Please run 0_setup_database.py first.")
+        print(f"Error: {filepath} not found. Please run scripts/initialize_and_train.py first.") # <-- FIXED SCRIPT NAME
         return []
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in {filepath}: {e}")
@@ -28,7 +28,7 @@ def load_transactions(filepath='data/mock_blockchain_transactions.json'):
         return []
 
 # CORRECTED function to save ALL processed transactions
-def save_processed_transactions(transactions, filepath='output/all_processed_transactions.csv'):
+def save_processed_transactions(transactions, filepath='../output/all_processed_transactions.csv'): # <-- FIXED PATH
     """Save ALL processed transactions to CSV"""
     # Use the transactions list directly, DO NOT filter here
     processed_txs = transactions # Use the list as is
@@ -122,7 +122,7 @@ def main():
     print("=" * 60 + "\nBATCH SIMULATION RUNNER\n" + "=" * 60)
     print("\nStep 1: Loading Transactions...")
     # Ensure it loads the JSON with is_fraud labels
-    transactions = load_transactions('data/mock_blockchain_transactions.json')
+    transactions = load_transactions() # Uses fixed path
     if not transactions:
         print("\nError: No transactions loaded. Exiting.")
         save_processed_transactions([]) # Ensure output file exists even if empty
@@ -150,8 +150,8 @@ def main():
     end_time_sim = datetime.now()
     duration_sim = end_time_sim - start_time_sim
     print("\n" + "=" * 60 + f"\nBATCH SIMULATION COMPLETE! (Duration: {duration_sim})\n" + "=" * 60)
-    print("Output saved to output/all_processed_transactions.csv")
-    print("You can now run 'python 3_calculate_accuracy.py' to evaluate performance on this data.")
+    print("Output saved to ../output/all_processed_transactions.csv")
+    print("You can now run 'python scripts/calculate_accuracy.py' to evaluate performance on this data.")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,83 @@
+# ===================================================================
+# === Project Artifacts (Data, Models, Outputs) ===
+# ===================================================================
+#
+# Ignore all generated files and folders.
+# We explicitly want to track the *source data*
+# (dark_web_wallets.txt, mock_blockchain_transactions.json)
+# so we *do not* ignore the entire /data/ folder.
+#
+# Ignore the generated database
+/data/wallet_profiles.db
+/data/*.db-journal
+/data/*.sqlite
+/data/*.sqlite3
+
+# Ignore all trained models
+/models/
+
+# Ignore all generated reports/CSVs
+/output/
+
+
+# ===================================================================
+# === Python / Backend ===
+# ===================================================================
+#
+# Virtual Environments
+/backend/venv/
+/backend/.venv/
+/backend/env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets - VERY IMPORTANT
+/backend/.env
+/backend/.env.*
+/backend/config.ini
+
+
+# ===================================================================
+# === Node.js / Frontend ===
+# ===================================================================
+#
+# Dependencies (this folder is huge)
+/frontend/node_modules/
+
+# Build outputs (from your old .gitignore)
+/frontend/dist/
+/frontend/dist-ssr/
+/frontend/build/
+/frontend/.vite/
+
+# Logs
+/frontend/npm-debug.log*
+/frontend/yarn-error.log*
+/frontend/pnpm-debug.log*
+
+# Secrets - VERY IMPORTANT
+/frontend/.env
+/frontend/.env.*
+/frontend/.env.local
+
+
+# ===================================================================
+# === General / OS / IDE ===
+# ===================================================================
+#
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor config
+.idea/
+*.swp
+*.suo
+
+# VSCode (but allow sharing extensions config)
+.vscode/*
+!.vscode/extensions.json

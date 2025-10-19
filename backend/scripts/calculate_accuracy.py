@@ -10,7 +10,7 @@ import numpy as np
 
 # --- Configuration ---
 # File containing processed transactions with predictions and ground truth
-INPUT_FILE = 'output/all_processed_transactions.csv'
+INPUT_FILE = '../output/all_processed_transactions.csv' # <-- FIXED PATH
 
 # Define how system status maps to a binary prediction (1=Fraud/Risky, 0=Not Fraud)
 # We consider both DENY and FLAG_FOR_REVIEW as positive predictions for this calculation
@@ -51,7 +51,7 @@ def calculate_accuracy():
     if df_labeled.empty:
         print("No records with ground truth labels found. Cannot calculate accuracy.")
         print("Make sure you ran the setup script to generate labeled mock data,")
-        print("and processed it (e.g., using 1_run_simulation.py or letting the backend run).")
+        print("and processed it (e.g., using scripts/run_simulation.py or letting the backend run).") # <-- FIXED SCRIPT NAME
         return
 
     # Extract ground truth and predictions
