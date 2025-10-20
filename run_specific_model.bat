@@ -1,30 +1,47 @@
 @echo off
-set TIMESTAMP=%1
+REM ======================================================================
+REM == Run Simulation & View Dashboard for a SPECIFIC Model Timestamp ==
+REM ======================================================================
 
-IF "%TIMESTAMP%"=="" (
-    ECHO ❌ ERROR: No timestamp provided.
-    ECHO.
-    ECHO   Usage: run_specific_model.bat <TIMESTAMP>
-    ECHO   Example: run_specific_model.bat 20251019_223000
+set MODEL_TIMESTAMP=%1
+
+if "%MODEL_TIMESTAMP%"=="" (
+    echo [ERROR] No timestamp provided.
+    echo.
+    echo Usage: run_specific_model.bat ^<TIMESTAMP^>
+    echo Example: run_specific_model.bat 20251020_210357
     pause
-    goto :eof
+    exit /b 1
 )
 
-ECHO =======================================================
-ECHO (1/2) RUNNING SIMULATION FOR MODEL: %TIMESTAMP%
-ECHO =======================================================
-cd backend/scripts
-python run_simulation.py %TIMESTAMP%
+echo [INFO] Running workflow for model: %MODEL_TIMESTAMP%
+echo.
 
-ECHO.
-ECHO =======================================================
-ECHO (2/2) CALCULATING ACCURACY FOR MODEL: %TIMESTAMP%
-ECHO =======================================================
-python calculate_accuracy.py %TIMESTAMP%
+echo [STEP 1/2] Running simulation on all 10,000 transactions...
+echo ======================================================================
+python -m backend.scripts.run_simulation %MODEL_TIMESTAMP%
+if errorlevel 1 (
+    echo [ERROR] Simulation run failed!
+    pause
+    exit /b 1
+)
+echo.
+echo [SUCCESS] Simulation complete. Results saved to output/
+echo.
 
-cd ../..
-ECHO.
-ECHO =======================================================
-ECHO ✓ WORKFLOW COMPLETE
-ECHO =======================================================
+echo [STEP 2/2] Launching Analytics Dashboard for model %MODEL_TIMESTAMP%...
+echo ======================================================================
+echo Press Ctrl+C in this window to stop the dashboard.
+streamlit run backend/analytics_dashboard.py -- %MODEL_TIMESTAMP%
+if errorlevel 1 (
+    echo [ERROR] Failed to start Streamlit dashboard.
+    pause
+    exit /b 1
+)
+
+echo.
+echo ======================================================================
+echo WORKFLOW COMPLETE
+echo ======================================================================
+echo.
 pause

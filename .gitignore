@@ -81,3 +81,5 @@ Thumbs.db
 # VSCode (but allow sharing extensions config)
 .vscode/*
 !.vscode/extensions.json
+
+/data/

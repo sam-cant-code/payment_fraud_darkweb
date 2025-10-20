@@ -5,13 +5,20 @@ Handles schema creation and connection for the unified SQLite database.
 
 import sqlite3
 import os
+from pathlib import Path
 
-DB_FILE = 'data/app.db'
+# --- PATH CONFIGURATION ---
+SCRIPT_DIR = Path(__file__).resolve().parent  # backend/app/
+BACKEND_DIR = SCRIPT_DIR.parent  # backend/
+PROJECT_ROOT = BACKEND_DIR.parent  # project root
+
+# *** MODIFICATION: Use PROJECT_ROOT for DB path ***
+DB_FILE = PROJECT_ROOT / 'data' / 'app.db'
 
 def get_db_connection():
     """Establishes a connection to the database."""
-    os.makedirs('data', exist_ok=True) # Ensure data directory exists
-    conn = sqlite3.connect(DB_FILE)
+    os.makedirs(DB_FILE.parent, exist_ok=True) # Ensure data directory exists
+    conn = sqlite3.connect(str(DB_FILE))
     conn.row_factory = sqlite3.Row  # This allows accessing columns by name
     return conn
 
@@ -19,7 +26,7 @@ def create_schema():
     """Creates all necessary tables in the database."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     # --- Threat Intelligence Table ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS threat_list (
@@ -27,17 +34,19 @@ def create_schema():
         added_on TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
-    
+
     # --- Wallet Historical Profiles ---
+    # *** MODIFICATION: Added 'first_seen' to match training script ***
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS wallet_profiles (
         wallet_address TEXT PRIMARY KEY,
         avg_transaction_value REAL,
         transaction_count INTEGER,
+        first_seen TEXT, 
         last_updated TEXT
     )
     """)
-    
+
     # --- All Transactions Table ---
     # Replaces 'flagged_transactions'. We now store ALL results.
     cursor.execute("""
@@ -55,6 +64,8 @@ def create_schema():
         reasons TEXT,
         agent_1_score REAL,
         agent_2_score REAL,
+        agent_3_score REAL,
+        ml_probability REAL,
         
         -- Ground truth label
         is_fraud INTEGER, 
@@ -65,12 +76,12 @@ def create_schema():
         reviewed_on TIMESTAMP
     )
     """)
-    
+
     conn.commit()
     conn.close()
     print("Database schema created/verified successfully.")
 
 if __name__ == '__main__':
-    # This allows running 'python database.py' to initialize the DB
+    # This allows running 'python -m app.database' from 'backend' folder
     create_schema()
     print(f"Database file created at {DB_FILE}")

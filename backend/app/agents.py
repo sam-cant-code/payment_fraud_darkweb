@@ -5,6 +5,7 @@ IMPROVED VERSION - Calibrated for better accuracy with reduced false positives
 
 import pickle
 import sqlite3
+import json  # <-- THIS IS THE FIX
 from typing import Dict, Optional
 import os
 from datetime import datetime, timedelta, UTC
@@ -39,22 +40,22 @@ except ImportError:
 THREAT_LIST_CACHE = None
 THREAT_LIST_LAST_LOADED = None
 
-KNOWN_MIXER_ADDRESSES = {f"0xmix{i:038x}" for i in range(2)}
+KNOWN_MIXER_ADDRESSES = {f"0xmix{i:038x}" for i in range(5)} # Updated to 5 from new script
 
 RECENT_SMALL_TRANSFERS = {}
 TRANSFER_WINDOW = timedelta(minutes=10)
 TRANSFER_THRESHOLD = 5
-SMALL_TRANSFER_VALUE = 0.01
+SMALL_TRANSFER_VALUE = 0.1 # Updated to 0.1 from new script
 
 
 def load_dark_web_wallets(force_reload: bool = False) -> set:
     """Load the list of known malicious wallet addresses with caching"""
     global THREAT_LIST_CACHE, THREAT_LIST_LAST_LOADED
     now = datetime.now()
-    
+
     if THREAT_LIST_CACHE is None or force_reload or \
        (THREAT_LIST_LAST_LOADED and (now - THREAT_LIST_LAST_LOADED > timedelta(minutes=5))):
-        
+
         if not THREAT_FILE_PATH.exists():
             print(f"Warning: {THREAT_FILE_PATH} not found. Threat list is empty.")
             THREAT_LIST_CACHE = set()
@@ -68,7 +69,7 @@ def load_dark_web_wallets(force_reload: bool = False) -> set:
                 print(f"Error loading {THREAT_FILE_PATH}: {e}")
                 THREAT_LIST_CACHE = set()
         THREAT_LIST_LAST_LOADED = now
-    
+
     return THREAT_LIST_CACHE or set()
 
 
@@ -91,7 +92,7 @@ def agent_1_monitor(transaction: Dict) -> Dict:
     if from_addr in dark_web_wallets:
         score += 50  # Was 60
         reasons.append(f"From-Wallet ({from_addr[:10]}...) on Threat List")
-    
+
     if to_addr in dark_web_wallets:
         if to_addr in KNOWN_MIXER_ADDRESSES:
             score += 60  # Was 70
@@ -136,7 +137,7 @@ def agent_1_monitor(transaction: Dict) -> Dict:
     # =====================================================
     if value_eth > 0 and value_eth < SMALL_TRANSFER_VALUE and from_addr:
         now = datetime.now(UTC)
-        
+
         if from_addr in RECENT_SMALL_TRANSFERS:
             RECENT_SMALL_TRANSFERS[from_addr] = [
                 ts for ts in RECENT_SMALL_TRANSFERS[from_addr] if now - ts <= TRANSFER_WINDOW
@@ -147,7 +148,7 @@ def agent_1_monitor(transaction: Dict) -> Dict:
         current_ts = None
         if timestamp_str:
             try:
-                current_ts = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=UTC)
+                current_ts = datetime.fromisoformat(timestamp_str.replace('Z', '')).replace(tzinfo=UTC)
             except (ValueError, TypeError):
                 current_ts = now
 
@@ -191,57 +192,121 @@ def agent_1_monitor(transaction: Dict) -> Dict:
 def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
     """
     Engineer features for ML prediction
-    Must match training features exactly
+    *** MODIFIED: Must create 26 features to match new model ***
     """
     from_addr = transaction.get('from_address', '').lower()
     to_addr = transaction.get('to_address', '').lower()
     value = transaction.get('value_eth', 0.0)
     gas = transaction.get('gas_price', 0.0)
-    
-    threat_set = set(w.lower() for w in load_dark_web_wallets())
-    
-    features = [value, gas, value * gas]
-    features.append(1 if from_addr in threat_set else 0)
-    features.append(1 if to_addr in threat_set else 0)
-    
+
+    threat_set = load_dark_web_wallets()
+
+    # 0, 1, 2: Basic features
+    feat = [
+        value,
+        gas,
+        value * gas,
+    ]
+
+    # 3, 4: Threat intelligence
+    feat.extend([
+        1 if from_addr in threat_set else 0,
+        1 if to_addr in threat_set else 0,
+    ])
+
+    # --- Profile features from DB ---
     sender_tx_count = 0
-    sender_avg_value = 0.1
+    sender_avg_value = 0.001 # Use 0.001 to avoid div by zero
+    receiver_tx_count = 0
     
     if DB_PATH.exists():
         try:
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
+            
+            # Get sender profile
             cursor.execute(
                 "SELECT avg_transaction_value, transaction_count FROM wallet_profiles WHERE wallet_address = ?",
                 (from_addr,)
             )
-            result = cursor.fetchone()
-            if result:
-                sender_avg_value = float(result[0]) if result[0] else 0.1
-                sender_tx_count = int(result[1]) if result[1] else 0
+            sender_result = cursor.fetchone()
+            if sender_result:
+                sender_avg_value = float(sender_result[0]) if sender_result[0] and sender_result[0] > 0 else 0.001
+                sender_tx_count = int(sender_result[1]) if sender_result[1] else 0
+            
+            # Get receiver profile
+            cursor.execute(
+                "SELECT transaction_count FROM wallet_profiles WHERE wallet_address = ?",
+                (to_addr,)
+            )
+            receiver_result = cursor.fetchone()
+            if receiver_result:
+                receiver_tx_count = int(receiver_result[0]) if receiver_result[0] else 0
+                
             conn.close()
         except Exception as e:
-            print(f"DB error: {e}")
+            print(f"DB error in feature engineering: {e}")
     
-    features.append(sender_tx_count)
-    features.append(sender_avg_value)
-    features.append(value / max(sender_avg_value, 0.001))
+    # 5, 6, 7: Sender profile
+    feat.extend([
+        sender_tx_count,
+        sender_avg_value,
+        value / max(sender_avg_value, 0.001) # value_deviation
+    ])
     
+    # 8, 9: Sender network (Cannot compute live, use 0)
+    feat.extend([
+        0, # sender_unique_recipients
+        0  # recipient_diversity
+    ])
+    
+    # 10, 11, 12: Receiver profile
+    feat.extend([
+        receiver_tx_count,
+        0, # receiver_total_received (Cannot compute live)
+        0  # receiver_unique_senders (Cannot compute live)
+    ])
+    
+    # 13, 14, 15: Temporal features
     try:
         ts = datetime.fromisoformat(transaction.get('timestamp', '').replace('Z', ''))
-        features.append(ts.hour)
-        features.append(ts.weekday())
+        hour = ts.hour
+        weekday = ts.weekday()
+        odd_hours = 1 if 2 <= hour <= 5 else 0
     except:
-        features.append(12)
-        features.append(3)
+        hour = 12
+        weekday = 3
+        odd_hours = 0
+        
+    feat.extend([
+        hour,
+        weekday,
+        odd_hours
+    ])
+
+    # 16, 17: Velocity features (Cannot compute live, use default)
+    feat.extend([
+        86400, # avg_time_between_tx
+        86400  # min_time_between_tx
+    ])
     
-    features.append(86400)
-    features.append(1 if value > 100 else 0)
-    features.append(1 if value > 50 else 0)
-    features.append(1 if gas > 150 else 0)
-    features.append(gas / max(value, 0.001))
-    
-    return np.array(features).reshape(1, -1)
+    # 18-26: Pattern features
+    feat.extend([
+        1 if value > 100 else 0,             # 18: very_high_value
+        1 if value > 50 else 0,              # 19: high_value
+        1 if value < 0.1 else 0,             # 20: micro_value
+        1 if gas > 150 else 0,               # 21: high_gas
+        1 if gas < 30 else 0,                # 22: low_gas
+        gas / max(value, 0.001),             # 23: gas_value_ratio
+        1 if from_addr == to_addr else 0,     # 24: self_transfer
+        1 if (value > 0 and (value * 100) % 100 < 0.01) else 0, # 25: round_number
+    ])
+
+    # Should be 26 features total
+    if len(feat) != 26:
+        print(f"FATAL ERROR: Feature engineering created {len(feat)} features, expected 26.")
+        
+    return np.array(feat).reshape(1, -1)
 
 
 def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
@@ -256,14 +321,39 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
     # =====================================================
     # ML Model Prediction - CALIBRATED SCORING
     # =====================================================
-    
+
     # *** MODIFICATION: Select model paths based on timestamp ***
     if model_timestamp:
         model_path = PROJECT_ROOT / 'models' / f'fraud_model_{model_timestamp}.pkl'
         scaler_path = PROJECT_ROOT / 'models' / f'scaler_{model_timestamp}.pkl'
+        metadata_path = PROJECT_ROOT / 'models' / f'model_metadata_{model_timestamp}.json'
     else:
-        model_path = MODEL_PATH  # Use default
-        scaler_path = SCALER_PATH # Use default
+        # Fallback to latest
+        try:
+            with open(PROJECT_ROOT / 'models' / 'latest_model_timestamp.txt', 'r') as f:
+                latest_timestamp = f.read().strip()
+            # print(f"[agents.py] No timestamp provided, using latest: {latest_timestamp}")
+            model_path = PROJECT_ROOT / 'models' / f'fraud_model_{latest_timestamp}.pkl'
+            scaler_path = PROJECT_ROOT / 'models' / f'scaler_{latest_timestamp}.pkl'
+            metadata_path = PROJECT_ROOT / 'models' / f'model_metadata_{latest_timestamp}.json'
+        except FileNotFoundError:
+            print("[agents.py] 'latest_model_timestamp.txt' not found. Using default paths.")
+            model_path = MODEL_PATH  # Use default
+            scaler_path = SCALER_PATH # Use default
+            metadata_path = PROJECT_ROOT / 'models' / 'model_metadata.json'
+
+
+    # --- Load Optimal Threshold from metadata ---
+    optimal_threshold = 0.5 # Default
+    try:
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                optimal_threshold = metadata.get('optimal_threshold', 0.5)
+                # print(f"[agents.py] Loaded optimal threshold: {optimal_threshold}")
+    except Exception as e:
+        print(f"Warning: Could not load metadata {metadata_path}. Using default 0.5 threshold. Error: {e}")
+
 
     if model_path.exists() and scaler_path.exists():
         try:
@@ -271,50 +361,54 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
                 model = pickle.load(f)
             with open(scaler_path, 'rb') as f:
                 scaler = pickle.load(f)
-            
+
             features = engineer_features_for_prediction(transaction)
             features_scaled = scaler.transform(features)
-            
-            prediction = model.predict(features_scaled)[0]
+
+            # prediction = model.predict(features_scaled)[0] # Don't use this, use threshold
             probability = model.predict_proba(features_scaled)[0]
             fraud_probability = probability[1] if len(probability) > 1 else 0.0
+
+            # ***MODIFICATION: Use optimal threshold for decision***
+            prediction = 1 if fraud_probability >= optimal_threshold else 0
             
-            # IMPROVED: Graduated probability bands
+            # Use probability for scoring
             if fraud_probability >= 0.80:
                 ml_risk_score = 50
                 score += ml_risk_score
                 reasons.append(f"ML Model: Very high fraud probability ({fraud_probability:.2%})")
-                
+
             elif fraud_probability >= 0.65:
                 ml_risk_score = 40
                 score += ml_risk_score
                 reasons.append(f"ML Model: High fraud probability ({fraud_probability:.2%})")
-                
-            elif fraud_probability >= 0.50:
+
+            elif fraud_probability >= optimal_threshold: # Use optimal threshold
                 ml_risk_score = 30
                 score += ml_risk_score
                 reasons.append(f"ML Model: Moderate-high fraud probability ({fraud_probability:.2%})")
-                
-            elif fraud_probability >= 0.35:
-                ml_risk_score = 20
-                score += ml_risk_score
-                reasons.append(f"ML Model: Moderate fraud probability ({fraud_probability:.2%})")
-                
+
             elif fraud_probability >= 0.25:
                 ml_risk_score = 10
                 score += ml_risk_score
                 reasons.append(f"ML Model: Low-moderate fraud probability ({fraud_probability:.2%})")
-            
+
             # Store for analysis
             transaction['ml_fraud_probability'] = round(fraud_probability, 4)
-                
+            transaction['ml_prediction'] = prediction # Store the 0/1 prediction
+
         except Exception as e:
             print(f"Warning: Error using ML model: {e}")
+            transaction['ml_fraud_probability'] = -1.0
+            transaction['ml_prediction'] = -1
     else:
         if model_timestamp:
             print(f"Warning: Model files not found for timestamp '{model_timestamp}' at {model_path}")
         else:
             print(f"Warning: Default model files not found at {model_path}")
+        transaction['ml_fraud_probability'] = -1.0
+        transaction['ml_prediction'] = -1
+
 
     # =====================================================
     # Historical Profile Check - REFINED SCORING
@@ -324,22 +418,22 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
             from_addr = transaction.get('from_address', '')
-            
+
             if from_addr:
                 cursor.execute(
                     "SELECT avg_transaction_value, transaction_count FROM wallet_profiles WHERE wallet_address = ?",
                     (from_addr.lower(),)
                 )
                 result = cursor.fetchone()
-                
+
                 if result and result[0] is not None:
                     avg_value = float(result[0])
                     tx_count = int(result[1]) if result[1] else 0
                     current_value = transaction.get('value_eth', 0.0)
-                    
+
                     if avg_value > 0.0001:
                         deviation_ratio = current_value / avg_value
-                        
+
                         # IMPROVED: More nuanced deviation bands
                         if deviation_ratio > 15:
                             score += 40
@@ -356,23 +450,23 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
                         elif deviation_ratio > 3:
                             score += 8
                             reasons.append(f"Value {deviation_ratio:.1f}x higher than avg (moderate deviation)")
-                        
+
                         # Check low-activity + high value
                         if tx_count < 10 and current_value > 10:
                             score += 12
                             reasons.append(f"High value from low-activity wallet ({tx_count} txs)")
-                    
+
                     elif current_value > 1:
                         score += 18
                         reasons.append(f"Significant value from near-zero avg wallet")
-                
+
                 else:
                     # Unknown wallet with high value
                     current_value = transaction.get('value_eth', 0.0)
                     if current_value > 20:
                         score += 15
                         reasons.append(f"High-value transaction from unknown wallet")
-            
+
             conn.close()
         except Exception as e:
             print(f"Warning: DB error: {e}")
@@ -382,19 +476,18 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
     # =====================================================
     value = transaction.get('value_eth', 0.0)
     gas_price = transaction.get('gas_price', 0.0)
-    
+
     # Round number transactions
     if value > 0:
-        round_numbers = [1.0, 5.0, 10.0, 50.0, 100.0]
-        if any(abs(value - rn) < 0.001 for rn in round_numbers):
+        if (value > 0 and (value * 100) % 100 < 0.01):
             score += 3
             reasons.append(f"Round number transaction ({value} ETH)")
-    
+
     # Low gas for high value
     if value > 10 and gas_price < 20:
         score += 5
         reasons.append(f"Unusually low gas ({gas_price:.1f} Gwei) for high value")
-    
+
     # Cap score
     score = min(score, 100)
 
@@ -493,7 +586,7 @@ def analyze_transaction(tx_hash: str, transaction: Dict, model_timestamp: str = 
     """
     # *** MODIFICATION: Pass timestamp to pipeline ***
     processed = process_transaction_pipeline(transaction.copy(), model_timestamp=model_timestamp)
-    
+
     analysis = {
         "tx_hash": tx_hash,
         "final_status": processed.get('final_status'),
@@ -520,7 +613,7 @@ def analyze_transaction(tx_hash: str, transaction: Dict, model_timestamp: str = 
             "gas": transaction.get('gas_price')
         }
     }
-    
+
     return analysis
 
 
@@ -528,7 +621,7 @@ def analyze_transaction(tx_hash: str, transaction: Dict, model_timestamp: str = 
 if __name__ == "__main__":
     print("Testing Agent Pipeline...")
     print("=" * 60)
-    
+
     test_tx = {
         "tx_hash": "0xtest123",
         "from_address": "0xnorm000000000000000000000000000000000000",
@@ -538,10 +631,10 @@ if __name__ == "__main__":
         "timestamp": "2025-10-19T12:00:00Z",
         "is_fraud": 0
     }
-    
+
     # Test with default model
     result = process_transaction_pipeline(test_tx)
-    
+
     print(f"Final Status (Default Model): {result['final_status']}")
     print(f"Final Score: {result['final_score']}")
     print(f"\nAgent Scores:")

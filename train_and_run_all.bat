@@ -1,50 +1,49 @@
 @echo off
-ECHO =======================================================
-ECHO (1/3) TRAINING NEW MODEL...
-ECHO =======================================================
-cd backend/scripts
-python initialize_and_train.py
-
-:: Check the correct path: up two levels from 'scripts' to the project root, then into 'models'.
-IF NOT EXIST ../../models/latest_model_timestamp.txt (
-    ECHO.
-    ECHO ❌ ERROR: Model training failed or latest_model_timestamp.txt was not created.
-    cd ../..
+REM ======================================================================
+REM == ENHANCED WORKFLOW: Train Model, Run Simulation, & Start Dashboard ==
+REM ======================================================================
+echo.
+echo [STEP 1/3] Training new model with enhanced dataset...
+echo ======================================================================
+python -m backend.scripts.initialize_and_train
+if errorlevel 1 (
+    echo [ERROR] Model training failed!
     pause
-    goto :eof
+    exit /b 1
 )
+echo.
+echo [SUCCESS] Model training complete.
 
-:: *** ROBUST FIX ***
-:: Use a FOR loop to read the timestamp instead of input redirection (<)
-ECHO.
-ECHO Reading timestamp...
-FOR /F "usebackq tokens=*" %%a IN ("../../models/latest_model_timestamp.txt") DO (
-    SET "LATEST_TIMESTAMP=%%a"
-)
+REM --- Get the timestamp of the new model ---
+set /p LATEST_TIMESTAMP=<models\latest_model_timestamp.txt
+echo [INFO] New model timestamp: %LATEST_TIMESTAMP%
+echo.
 
-IF NOT DEFINED LATEST_TIMESTAMP (
-    ECHO.
-    ECHO ❌ ERROR: Could not read timestamp from latest_model_timestamp.txt.
-    cd ../..
+echo [STEP 2/3] Running simulation on all 10,000 transactions...
+echo ======================================================================
+python -m backend.scripts.run_simulation %LATEST_TIMESTAMP%
+if errorlevel 1 (
+    echo [ERROR] Simulation run failed!
     pause
-    goto :eof
+    exit /b 1
+)
+echo.
+echo [SUCCESS] Simulation complete. Results saved to output/
+echo.
+
+echo [STEP 3/3] Launching Analytics Dashboard...
+echo ======================================================================
+echo Press Ctrl+C in this window to stop the dashboard.
+streamlit run backend/analytics_dashboard.py -- %LATEST_TIMESTAMP%
+if errorlevel 1 (
+    echo [ERROR] Failed to start Streamlit dashboard.
+    pause
+    exit /b 1
 )
 
-ECHO.
-ECHO =======================================================
-ECHO (2/3) RUNNING SIMULATION FOR MODEL: %LATEST_TIMESTAMP%
-ECHO =======================================================
-python run_simulation.py %LATEST_TIMESTAMP%
-
-ECHO.
-ECHO =======================================================
-ECHO (3/3) CALCULATING ACCURACY FOR MODEL: %LATEST_TIMESTAMP%
-ECHO =======================================================
-python calculate_accuracy.py %LATEST_TIMESTAMP%
-
-cd ../..
-ECHO.
-ECHO =======================================================
-ECHO ✓ WORKFLOW COMPLETE
-ECHO =======================================================
+echo.
+echo ======================================================================
+echo WORKFLOW COMPLETE
+echo ======================================================================
+echo.
 pause
