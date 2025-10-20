@@ -5,7 +5,7 @@ IMPROVED VERSION - Calibrated for better accuracy with reduced false positives
 
 import pickle
 import sqlite3
-from typing import Dict
+from typing import Dict, Optional
 import os
 from datetime import datetime, timedelta, UTC
 import numpy as np
@@ -16,14 +16,14 @@ SCRIPT_DIR = Path(__file__).resolve().parent  # backend/app/
 BACKEND_DIR = SCRIPT_DIR.parent  # backend/
 PROJECT_ROOT = BACKEND_DIR.parent  # project root
 
-# Files stored in PROJECT ROOT
+# *** MODIFICATION: These are now DEFAULTS ***
 MODEL_PATH = PROJECT_ROOT / 'models' / 'fraud_model.pkl'
 SCALER_PATH = PROJECT_ROOT / 'models' / 'scaler.pkl'
 DB_PATH = PROJECT_ROOT / 'data' / 'wallet_profiles.db'
 THREAT_FILE_PATH = PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'
 
 print(f"[agents.py] Project root: {PROJECT_ROOT}")
-print(f"[agents.py] Model path: {MODEL_PATH} (exists: {MODEL_PATH.exists()})")
+print(f"[agents.py] Default Model path: {MODEL_PATH} (exists: {MODEL_PATH.exists()})")
 
 # Import the neutralized network agent
 try:
@@ -244,10 +244,11 @@ def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
     return np.array(features).reshape(1, -1)
 
 
-def agent_2_behavioral(transaction: Dict) -> Dict:
+def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
     """
     Agent 2: Behavioral Profiler with Machine Learning
     IMPROVED: Calibrated ML scoring and better historical profiling
+    *** MODIFIED: Accepts model_timestamp to load specific models ***
     """
     score = 0
     reasons = []
@@ -255,11 +256,20 @@ def agent_2_behavioral(transaction: Dict) -> Dict:
     # =====================================================
     # ML Model Prediction - CALIBRATED SCORING
     # =====================================================
-    if MODEL_PATH.exists() and SCALER_PATH.exists():
+    
+    # *** MODIFICATION: Select model paths based on timestamp ***
+    if model_timestamp:
+        model_path = PROJECT_ROOT / 'models' / f'fraud_model_{model_timestamp}.pkl'
+        scaler_path = PROJECT_ROOT / 'models' / f'scaler_{model_timestamp}.pkl'
+    else:
+        model_path = MODEL_PATH  # Use default
+        scaler_path = SCALER_PATH # Use default
+
+    if model_path.exists() and scaler_path.exists():
         try:
-            with open(MODEL_PATH, 'rb') as f:
+            with open(model_path, 'rb') as f:
                 model = pickle.load(f)
-            with open(SCALER_PATH, 'rb') as f:
+            with open(scaler_path, 'rb') as f:
                 scaler = pickle.load(f)
             
             features = engineer_features_for_prediction(transaction)
@@ -301,7 +311,10 @@ def agent_2_behavioral(transaction: Dict) -> Dict:
         except Exception as e:
             print(f"Warning: Error using ML model: {e}")
     else:
-        print(f"Warning: Model files not found at {MODEL_PATH}")
+        if model_timestamp:
+            print(f"Warning: Model files not found for timestamp '{model_timestamp}' at {model_path}")
+        else:
+            print(f"Warning: Default model files not found at {model_path}")
 
     # =====================================================
     # Historical Profile Check - REFINED SCORING
@@ -427,14 +440,16 @@ def agent_4_decision(transaction: Dict) -> Dict:
     return transaction
 
 
-def process_transaction_pipeline(transaction: Dict) -> Dict:
+def process_transaction_pipeline(transaction: Dict, model_timestamp: str = None) -> Dict:
     """
     Pass transaction through the complete agent pipeline
+    *** MODIFIED: Accepts and passes model_timestamp ***
     """
     is_fraud_label = transaction.get('is_fraud')
 
     processed_tx = agent_1_monitor(transaction.copy())
-    processed_tx = agent_2_behavioral(processed_tx)
+    # *** MODIFICATION: Pass timestamp to agent_2 ***
+    processed_tx = agent_2_behavioral(processed_tx, model_timestamp=model_timestamp)
     processed_tx = agent_3_network(processed_tx)
     processed_tx = agent_4_decision(processed_tx)
 
@@ -470,12 +485,14 @@ def get_system_thresholds():
     }
 
 
-def analyze_transaction(tx_hash: str, transaction: Dict) -> Dict:
+def analyze_transaction(tx_hash: str, transaction: Dict, model_timestamp: str = None) -> Dict:
     """
     Detailed analysis function for debugging
     Returns breakdown of all agent scores
+    *** MODIFIED: Accepts and passes model_timestamp ***
     """
-    processed = process_transaction_pipeline(transaction.copy())
+    # *** MODIFICATION: Pass timestamp to pipeline ***
+    processed = process_transaction_pipeline(transaction.copy(), model_timestamp=model_timestamp)
     
     analysis = {
         "tx_hash": tx_hash,
@@ -522,9 +539,10 @@ if __name__ == "__main__":
         "is_fraud": 0
     }
     
+    # Test with default model
     result = process_transaction_pipeline(test_tx)
     
-    print(f"Final Status: {result['final_status']}")
+    print(f"Final Status (Default Model): {result['final_status']}")
     print(f"Final Score: {result['final_score']}")
     print(f"\nAgent Scores:")
     print(f"  Agent 1: {result['agent_1_score']}")

@@ -13,7 +13,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Configuration
-INPUT_FILE = '../output/all_processed_transactions.csv'
+# INPUT_FILE = '../../output/all_processed_transactions.csv' # This will be set dynamically
 
 # Define how system status maps to a binary prediction
 STATUS_TO_PREDICTION = {
@@ -27,11 +27,23 @@ def calculate_accuracy():
     print("FRAUD DETECTION ACCURACY CALCULATION")
     print("=" * 60)
 
+    # ***MODIFICATION: Check for command-line argument to select input file***
+    if len(sys.argv) > 1:
+        model_timestamp = sys.argv[1]
+        # *** FIX: Path changed from ../output to ../../output ***
+        INPUT_FILE = f'../../output/all_processed_transactions_{model_timestamp}.csv'
+        print(f"--- Analyzing results for model timestamp: {model_timestamp} ---")
+    else:
+        # *** FIX: Path changed from ../output to ../../output ***
+        INPUT_FILE = '../../output/all_processed_transactions.csv'
+        print(f"--- Analyzing default results: {INPUT_FILE} ---")
+        print("--- (To analyze a specific model, pass the timestamp as an argument) ---")
+    
     # Load Data
     if not os.path.exists(INPUT_FILE):
         print(f"\n❌ Error: Input file not found at '{INPUT_FILE}'")
-        print("Please ensure the simulation has run successfully.")
-        print("Run: python scripts/run_simulation.py")
+        print("Please ensure the simulation has run successfully for this model.")
+        print("Example: python scripts/run_simulation.py <TIMESTAMP>")
         return
 
     try:
@@ -77,6 +89,7 @@ def calculate_accuracy():
 
     # Additional metrics
     if len(labels) == 2:
+        # *** SYNTAX FIX: Removed extra '.' before y_true ***
         precision = precision_score(y_true, y_pred)
         recall = recall_score(y_true, y_pred)
         f1 = f1_score(y_true, y_pred)

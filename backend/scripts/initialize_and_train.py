@@ -34,10 +34,20 @@ ALL_MALICIOUS_LIST = list(MALICIOUS_WALLETS)
 ALL_MIXER_LIST = list(MIXER_ADDRESSES)
 COMBINED_THREAT_LIST = list(MALICIOUS_WALLETS | MIXER_ADDRESSES)
 
+# *** ADDED: Define Project Root ***
+# backend/scripts/initialize_and_train.py
+SCRIPT_DIR = Path(__file__).resolve().parent 
+BACKEND_DIR = SCRIPT_DIR.parent
+PROJECT_ROOT = BACKEND_DIR.parent
 
 def create_directories():
     """Create necessary directories if they don't exist"""
-    directories = ['../data', '../models', '../output']
+    # ***FIX: Use PROJECT_ROOT to create dirs in the right place***
+    directories = [
+        PROJECT_ROOT / 'data', 
+        PROJECT_ROOT / 'models', 
+        PROJECT_ROOT / 'output'
+    ]
     for directory in directories:
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -50,7 +60,7 @@ def create_mock_transactions():
     IMPROVED: More realistic distribution for better model training
     """
     print("\n=== Creating Mock Blockchain Transactions (5000 total) ===")
-    filepath = '../data/mock_blockchain_transactions.json'
+    filepath = PROJECT_ROOT / 'data' / 'mock_blockchain_transactions.json'
 
     malicious_wallets = ALL_MALICIOUS_LIST
     mixer_addresses = ALL_MIXER_LIST
@@ -339,9 +349,13 @@ def train_fraud_model():
     """
     print("\n=== Training Fraud Detection Model (IMPROVED - Balanced) ===")
     
-    transactions_filepath = '../data/mock_blockchain_transactions.json'
-    model_filepath = '../models/fraud_model.pkl'
-    scaler_filepath = '../models/scaler.pkl'
+    transactions_filepath = PROJECT_ROOT / 'data' / 'mock_blockchain_transactions.json'
+    
+    # ***MODIFICATION: Define base paths (filenames will be timestamped)***
+    # ***FIX: Use PROJECT_ROOT to save to the correct top-level 'models' folder***
+    model_base_path = PROJECT_ROOT / 'models' / 'fraud_model'
+    scaler_base_path = PROJECT_ROOT / 'models' / 'scaler'
+    metadata_base_path = PROJECT_ROOT / 'models' / 'model_metadata'
     
     try:
         with open(transactions_filepath, 'r') as f:
@@ -532,8 +546,17 @@ def train_fraud_model():
     print("SAVING MODEL")
     print("="*70)
     
+    # ***MODIFICATION: Generate timestamp for filenames***
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # ***FIX: Use Path object concatenation***
+    model_filepath = f'{model_base_path}_{run_timestamp}.pkl'
+    scaler_filepath = f'{scaler_base_path}_{run_timestamp}.pkl'
+    metadata_path = f'{metadata_base_path}_{run_timestamp}.json'
+    
     try:
-        os.makedirs(os.path.dirname(model_filepath), exist_ok=True)
+        # Ensure directory exists
+        # ***FIX: Use .parent on the Path object***
+        os.makedirs(model_base_path.parent, exist_ok=True)
         
         with open(model_filepath, 'wb') as f:
             pickle.dump(model, f)
@@ -554,14 +577,22 @@ def train_fraud_model():
             'test_recall': float(tp/(tp+fn) if (tp+fn)>0 else 0),
             'roc_auc': float(roc_auc) if 'roc_auc' in locals() else None,
             'training_date': datetime.now().isoformat(),
-            'class_weight': {0: 1, 1: 2}
+            'class_weight': {0: 1, 1: 2},
+            'model_file': os.path.basename(model_filepath),
+            'scaler_file': os.path.basename(scaler_filepath)
         }
         
-        metadata_path = PROJECT_ROOT / 'models' / 'model_metadata.json'
+        # ***MODIFICATION: Use timestamped metadata path***
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
         
         print(f"✓ Metadata saved to: {metadata_path}")
+
+        # ***MODIFICATION: Save the latest timestamp for automation***
+        timestamp_file = PROJECT_ROOT / 'models' / 'latest_model_timestamp.txt'
+        with open(timestamp_file, 'w') as f:
+            f.write(run_timestamp)
+        print(f"✓ Latest timestamp saved to: {timestamp_file}")
         
     except Exception as e:
         print(f"Error saving model: {e}")
@@ -583,7 +614,7 @@ def create_dark_web_wallet_list(threat_wallets):
         return
 
     print("\n=== Creating Dark Web Wallet List ===")
-    filepath = '../data/dark_web_wallets.txt'
+    filepath = PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'
     try:
         with open(filepath, 'w') as f:
             for wallet in sorted(list(threat_wallets)):
@@ -601,7 +632,7 @@ def create_wallet_profiles_db(normal_wallets):
         return
     
     print("\n=== Creating Wallet Profiles Database ===")
-    filepath = '../data/wallet_profiles.db'
+    filepath = PROJECT_ROOT / 'data' / 'wallet_profiles.db'
     conn = None
     
     try:
@@ -669,13 +700,14 @@ def main():
     print("\n" + "=" * 70)
     print(f"✓ SETUP COMPLETE! (Duration: {duration})")
     print("=" * 70)
-    print("\nCreated files:")
-    print("  - ../data/mock_blockchain_transactions.json (5000 transactions)")
-    print("  - ../models/fraud_model.pkl (Improved RandomForest)")
-    print("  - ../models/scaler.pkl (Feature scaler)")
-    print("  - ../models/model_metadata.json (Model info)")
-    print("  - ../data/dark_web_wallets.txt (Threat intelligence)")
-    print("  - ../data/wallet_profiles.db (Historical profiles)")
+    print("\nCreated files (example with timestamp):")
+    print(f"  - {PROJECT_ROOT / 'data' / 'mock_blockchain_transactions.json'}")
+    print(f"  - {PROJECT_ROOT / 'models' / 'fraud_model_YYYYMMDD_HHMMSS.pkl'}")
+    print(f"  - {PROJECT_ROOT / 'models' / 'scaler_YYYYMMDD_HHMMSS.pkl'}")
+    print(f"  - {PROJECT_ROOT / 'models' / 'model_metadata_YYYYMMDD_HHMMSS.json'}")
+    print(f"  - {PROJECT_ROOT / 'models' / 'latest_model_timestamp.txt'}")
+    print(f"  - {PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'}")
+    print(f"  - {PROJECT_ROOT / 'data' / 'wallet_profiles.db'}")
     print("\n" + "=" * 70)
     print("IMPROVEMENTS IN THIS VERSION:")
     print("=" * 70)
@@ -701,20 +733,18 @@ def main():
     print("\n" + "=" * 70)
     print("NEXT STEPS:")
     print("=" * 70)
-    print("1. Test the new model:")
-    print("   cd backend")
-    print("   python scripts/run_simulation.py")
-    print("   python scripts/calculate_accuracy.py")
+    print("1. Run the new automation script:")
+    print("   (From the main project folder)")
+    print("   train_and_run_all.bat")
     print("")
-    print("2. Compare metrics to previous run")
+    print("2. OR, run manually with a specific timestamp:")
+    print("   (From the main project folder)")
+    print("   run_specific_model.bat <TIMESTAMP>")
     print("")
-    print("3. If accuracy is good, start backend:")
+    print("3. If accuracy is good, start backend (using latest model):")
     print("   Run: start_backend.bat")
     print("")
     print("4. Launch frontend to see live results")
-    print("")
-    print("5. Optional: View analytics dashboard:")
-    print("   python analytics_dashboard.py")
     print("=" * 70)
 
 

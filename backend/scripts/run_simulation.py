@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app.agents import process_transaction_pipeline
 
-def load_transactions(filepath='../data/mock_blockchain_transactions.json'):
+# *** FIX: Path changed from ../data to ../../data ***
+def load_transactions(filepath='../../data/mock_blockchain_transactions.json'):
     """Load transactions from JSON file"""
     try:
         with open(filepath, 'r') as f:
@@ -31,8 +32,8 @@ def load_transactions(filepath='../data/mock_blockchain_transactions.json'):
         print(f"Error loading transactions: {e}")
         return []
 
-
-def save_processed_transactions(transactions, filepath='../output/all_processed_transactions.csv'):
+# *** FIX: Default path changed from ../output to ../../output ***
+def save_processed_transactions(transactions, filepath='../../output/all_processed_transactions.csv'):
     """Save ALL processed transactions to CSV"""
     if not transactions:
         print("No transactions were processed to save.")
@@ -106,7 +107,7 @@ def print_summary(transactions):
             print(f"  Labeled samples:    {has_labels}")
             print(f"  Actual fraud:       {actual_fraud} ({actual_fraud/has_labels*100:.1f}%)")
             print(f"  Actual normal:      {has_labels - actual_fraud} ({(has_labels-actual_fraud)/has_labels*100:.1f}%)")
-            print(f"\nNote: Run 'python scripts/calculate_accuracy.py' for detailed metrics")
+            print(f"\nNote: Run 'python scripts/calculate_accuracy.py <TIMESTAMP>' for detailed metrics")
     
     print("="*60)
 
@@ -147,12 +148,25 @@ def main():
     print("BATCH SIMULATION RUNNER")
     print("="*60)
     
+    # *** MODIFICATION: Check for timestamp argument ***
+    model_timestamp = None
+    if len(sys.argv) > 1:
+        model_timestamp = sys.argv[1]
+        print(f"--- Using model timestamp: {model_timestamp} ---")
+        # *** FIX: Path changed from ../output to ../../output ***
+        output_filepath = f'../../output/all_processed_transactions_{model_timestamp}.csv'
+    else:
+        print("--- Using default model (as defined in agents.py) ---")
+        # *** FIX: Path changed from ../output to ../../output ***
+        output_filepath = '../../output/all_processed_transactions.csv'
+    
+    
     print("\nStep 1: Loading Transactions...")
     transactions = load_transactions()
     
     if not transactions:
         print("\nError: No transactions loaded. Exiting.")
-        save_processed_transactions([])
+        save_processed_transactions([], filepath=output_filepath) # Pass filepath
         return
 
     print(f"\nStep 2: Processing {len(transactions)} Transactions Through Agent Pipeline...")
@@ -163,13 +177,16 @@ def main():
     for i, tx in enumerate(transactions, 1):
         if i % 100 == 0 or i == total:
             print(f"\r  Processing {i}/{total}... ({i/total*100:.1f}%)", end="")
-        processed_tx = process_transaction_pipeline(tx.copy())
+        
+        # *** MODIFICATION: Pass timestamp to pipeline ***
+        processed_tx = process_transaction_pipeline(tx.copy(), model_timestamp=model_timestamp)
         processed_transactions.append(processed_tx)
 
     print(f"\n✓ Processed all {len(processed_transactions)} transactions.")
 
     print("\nStep 3: Saving ALL Processed Transactions...")
-    save_processed_transactions(processed_transactions)
+    # *** MODIFICATION: Pass dynamic filepath ***
+    save_processed_transactions(processed_transactions, filepath=output_filepath)
 
     print_summary(processed_transactions)
     print_sample_flagged(processed_transactions)
@@ -180,8 +197,12 @@ def main():
     print("\n" + "=" * 60)
     print(f"✓ BATCH SIMULATION COMPLETE! (Duration: {duration_sim})")
     print("=" * 60)
-    print(f"Output saved to: ../output/all_processed_transactions.csv")
-    print(f"\nNext step: Run 'python scripts/calculate_accuracy.py' to see model performance")
+    print(f"Output saved to: {output_filepath}")
+    
+    if model_timestamp:
+        print(f"\nNext step: Run 'python scripts/calculate_accuracy.py {model_timestamp}' to see model performance")
+    else:
+        print(f"\nNext step: Run 'python scripts/calculate_accuracy.py' to see model performance")
 
 
 if __name__ == "__main__":
