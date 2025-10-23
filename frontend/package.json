@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vitejs/plugin-react-swc": "^4.1.0",
     "axios": "^1.7.2",
     "lucide-react": "^0.407.0",
     "plotly.js": "^2.33.0",

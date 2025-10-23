@@ -1,307 +1,505 @@
-import os
+"""
+Agent Logic Module for Blockchain Fraud Detection MVP
+*** VERSION 3.4 - READS MODEL ID FROM COMMAND-LINE ARG ***
+- Reads sys.argv[1] to set the model ID on startup.
+- This allows the backend to be started with a specific model.
+- Example: python server.py 20251023_115133
+"""
+
+import pickle
 import sqlite3
+import json
+import sys  # <-- Import sys
+from typing import Dict, Optional
+import os
+from datetime import datetime, timedelta, UTC
+import numpy as np
 from pathlib import Path
-import requests # <-- ADDED
-import time      # <-- ADDED
-from dotenv import load_dotenv # <-- ADDED
 
-# --- Path Setup ---
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DB_PATH = PROJECT_ROOT / 'data' / 'wallet_profiles.db' # Still needed for Agent 2 (local cache)
-THREAT_LIST_PATH = PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'
+# --- PATH CONFIGURATION ---
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = SCRIPT_DIR.parent
+PROJECT_ROOT = BACKEND_DIR.parent
 
-# --- Load Environment Variables ---
-load_dotenv(PROJECT_ROOT / 'backend' / '.env') # <-- ADDED: Load .env from backend folder
-ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY") # <-- ADDED
-ETHERSCAN_API_URL = "https://api.etherscan.io/api" # <-- ADDED
-
-if not ETHERSCAN_API_KEY:
-    print("="*50)
-    print("WARNING: ETHERSCAN_API_KEY not found in .env file.")
-    print("Agent 2 (Wallet Monitor) will not work with live data.")
-    print("="*50)
+DB_PATH = PROJECT_ROOT / 'data' / 'wallet_profiles.db'
+THREAT_FILE_PATH = PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'
 
 
-# --- Agent 1: Transaction Monitor ---
-class Agent_1_Transaction_Monitor:
-    """Analyzes intrinsic transaction properties like value and gas."""
-    
-    def analyze(self, transaction_data):
-        score = 10  # Start with a low base score
-        reasons = []
-        
-        tx_value = float(transaction_data.get('value_eth', 0))
-        gas_price = float(transaction_data.get('gas_price', 0)) # Assuming gas_price is in Gwei
+# --- !! MODEL SELECTION (FOR BACKEND) !! ---
+# Reads the model timestamp from the command-line argument.
+# Example: python your_server.py 20251023_115133
+# If no argument is provided, it defaults to 'latest'.
 
-        # 1. Value Check
-        if tx_value > 10:
-            score = 80 # High value is a strong indicator
-            reasons.append(f"High value: {tx_value:.2f} ETH")
+FORCED_MODEL_TIMESTAMP = None
+if len(sys.argv) > 1:
+    # Use the first command-line argument as the model timestamp
+    # This check ensures it's not a flag like '-m' from flask run
+    if not sys.argv[1].startswith('-'):
+        FORCED_MODEL_TIMESTAMP = sys.argv[1]
+
+
+print(f"[agents.py] Project root: {PROJECT_ROOT}")
+print(f"[agents.py] DB path: {DB_PATH} (exists: {DB_PATH.exists()})")
+if FORCED_MODEL_TIMESTAMP:
+    print(f"[agents.py] Backend model set to: {FORCED_MODEL_TIMESTAMP} (from command-line)")
+else:
+    print(f"[agents.py] Backend model set to: 'latest' (default)")
+
+
+try:
+    from agent_3_network import agent_3_network
+except ImportError:
+    print("Warning: agent_3_network.py not found. Agent 3 will be skipped.")
+    def agent_3_network(transaction: Dict) -> Dict:
+        transaction['agent_3_score'] = 0  # <--- Score is 0
+        transaction['agent_3_reasons'] = ["Agent 3 skipped (module not found)"]
+        return transaction
+
+# --- Global Cache ---
+THREAT_LIST_CACHE = None
+THREAT_LIST_LAST_LOADED = None
+KNOWN_MIXER_ADDRESSES = {f"0xmix{i:038x}" for i in range(10)}
+RECENT_SMALL_TRANSFERS = {}
+TRANSFER_WINDOW = timedelta(minutes=10)
+TRANSFER_THRESHOLD = 5
+SMALL_TRANSFER_VALUE = 0.05
+
+
+def load_dark_web_wallets(force_reload: bool = False) -> set:
+    """Load the list of known malicious wallet addresses with caching"""
+    global THREAT_LIST_CACHE, THREAT_LIST_LAST_LOADED
+    now = datetime.now()
+
+    if THREAT_LIST_CACHE is None or force_reload or \
+       (THREAT_LIST_LAST_LOADED and (now - THREAT_LIST_LAST_LOADED > timedelta(minutes=5))):
+
+        if not THREAT_FILE_PATH.exists():
+            print(f"Warning: {THREAT_FILE_PATH} not found. Threat list is empty.")
+            THREAT_LIST_CACHE = set()
         else:
-            # GOOD REASON: Value is normal
-            reasons.append(f"Normal value: {tx_value:.2f} ETH")
-
-        # 2. Gas Price Check
-        if gas_price > 100: # e.g., > 100 Gwei
-            score = max(score, 60) # High gas is a medium indicator
-            reasons.append(f"High gas: {gas_price:.0f} Gwei")
-        else:
-            # GOOD REASON: Gas price is normal
-            reasons.append(f"Normal gas: {gas_price:.0f} Gwei")
-            
-        return {"score": score, "reasons": reasons}
-
-# --- Agent 2: Wallet Monitor (REWRITTEN) ---
-class Agent_2_Wallet_Monitor:
-    """Analyzes wallet profiles using LIVE Etherscan data."""
-    
-    def __init__(self):
-        # We no longer use the DB, but a cache is smart to avoid
-        # hitting the API for the same address repeatedly.
-        self.profile_cache = {}
-        print("Agent 2: Initialized (Live Etherscan Mode)")
-
-    def get_wallet_profile_from_etherscan(self, wallet_address):
-        """
-        Fetches live wallet data from Etherscan API.
-        Returns a dict: {'first_tx_timestamp': int, 'tx_count': int} or None
-        """
-        # Check cache first
-        if wallet_address in self.profile_cache:
-            return self.profile_cache[wallet_address]
-            
-        if not ETHERSCAN_API_KEY:
-            print("Agent 2: No Etherscan API key. Skipping profile check.")
-            return None
-
-        profile = {}
-        
-        try:
-            # 1. Get Transaction Count (Nonce)
-            params_tx_count = {
-                'module': 'proxy',
-                'action': 'eth_getTransactionCount',
-                'address': wallet_address,
-                'tag': 'latest',
-                'apikey': ETHERSCAN_API_KEY
-            }
-            resp_tx_count = requests.get(ETHERSCAN_API_URL, params=params_tx_count, timeout=5)
-            resp_tx_count.raise_for_status() # Raise error on bad status
-            
-            data_tx_count = resp_tx_count.json()
-            if data_tx_count.get('result'):
-                # Result is in Hex (e.g., "0x1a"), convert to int
-                profile['tx_count'] = int(data_tx_count['result'], 16)
-            else:
-                profile['tx_count'] = 0
-
-            # 2. Get First Transaction (for Age)
-            params_first_tx = {
-                'module': 'account',
-                'action': 'txlist',
-                'address': wallet_address,
-                'startblock': 0,
-                'endblock': 99999999,
-                'page': 1,
-                'offset': 1,
-                'sort': 'asc',
-                'apikey': ETHERSCAN_API_KEY
-            }
-            resp_first_tx = requests.get(ETHERSCAN_API_URL, params=params_first_tx, timeout=5)
-            resp_first_tx.raise_for_status()
-
-            data_first_tx = resp_first_tx.json()
-            # 'result' is a list of transactions
-            if data_first_tx.get('status') == '1' and data_first_tx.get('result'):
-                first_tx = data_first_tx['result'][0]
-                profile['first_tx_timestamp'] = int(first_tx['timeStamp'])
-            else:
-                # No transactions found, wallet is new. Set timestamp to now.
-                profile['first_tx_timestamp'] = int(time.time())
-
-            # Save to cache and return
-            self.profile_cache[wallet_address] = profile
-            return profile
-
-        except requests.exceptions.RequestException as e:
-            print(f"Etherscan API Error for {wallet_address}: {e}")
-            # If API fails, return None so we can handle it gracefully
-            return None
-
-    def analyze(self, transaction_data):
-        score = 10 # Start low
-        reasons = []
-        
-        from_address = transaction_data.get('from_address')
-        to_address = transaction_data.get('to_address')
-
-        from_profile = self.get_wallet_profile_from_etherscan(from_address)
-        to_profile = self.get_wallet_profile_from_etherscan(to_address)
-
-        current_time_seconds = int(time.time())
-
-        # 1. Analyze Sender Profile
-        if from_profile:
-            age_seconds = current_time_seconds - from_profile['first_tx_timestamp']
-            age_days = age_seconds / 86400 # 60*60*24
-            tx_count = from_profile['tx_count']
-
-            # Check age
-            if age_days < 1:
-                score = 90
-                reasons.append(f"Sender wallet new ({age_days:.1f} days)")
-            else:
-                reasons.append(f"Sender wallet age OK ({age_days:.1f} days)")
-            
-            # Check transaction count (nonce)
-            if tx_count <= 1: # A count of 0 or 1 is very suspicious for a sender
-                score = max(score, 85)
-                reasons.append(f"Sender has low tx count ({tx_count})")
-            else:
-                reasons.append(f"Sender tx count OK ({tx_count})")
-        else:
-            score = max(score, 30) # API error or invalid address is a slight risk
-            reasons.append("Sender profile unknown (API error or new wallet)")
-
-        # 2. Analyze Receiver Profile (less strict)
-        if to_profile:
-            age_seconds = current_time_seconds - to_profile['first_tx_timestamp']
-            age_days = age_seconds / 86400
-            
-            if age_days < 1:
-                score = max(score, 70) # Receiver being new is also risky
-                reasons.append(f"Receiver wallet new ({age_days:.1f} days)")
-            else:
-                reasons.append(f"Receiver wallet age OK ({age_days:.1f} days)")
-        else:
-            score = max(score, 30) # Unknown receiver
-            reasons.append("Receiver profile unknown (API error or new wallet)")
-
-        return {"score": score, "reasons": reasons}
+            try:
+                with open(THREAT_FILE_PATH, 'r') as f:
+                    wallets = set(line.strip().lower() for line in f if line.strip())
+                THREAT_LIST_CACHE = wallets
+                print(f"Loaded threat list: {len(THREAT_LIST_CACHE)} addresses.")
+            except Exception as e:
+                print(f"Error loading {THREAT_FILE_PATH}: {e}")
+                THREAT_LIST_CACHE = set()
+        THREAT_LIST_LAST_LOADED = now
+    return THREAT_LIST_CACHE or set()
 
 
-# --- Agent 3: Threat Intel ---
-class Agent_3_Threat_Intel:
-    """Checks addresses against a known threat list."""
-    
-    def __init__(self, threat_list_path=THREAT_LIST_PATH):
-        self.threat_list_path = str(threat_list_path)
-        self.threat_list = self.load_threat_list()
-
-    def load_threat_list(self):
-        """Loads the threat list from a file into a set for fast lookup."""
-        threat_set = set()
-        if not os.path.exists(self.threat_list_path):
-            print(f"Warning: Threat list not found at {self.threat_list_path}. Agent 3 will be ineffective.")
-            return threat_set
-            
-        try:
-            with open(self.threat_list_path, 'r') as f:
-                for line in f:
-                    threat_set.add(line.strip().lower())
-            print(f"Loaded {len(threat_set)} addresses into threat intel list.")
-        except Exception as e:
-            print(f"Error loading threat list: {e}")
-        return threat_set
-
-    def analyze(self, transaction_data):
-        score = 10
-        reasons = []
-        
-        from_address = transaction_data.get('from_address', '').lower()
-        to_address = transaction_data.get('to_address', '').lower()
-
-        # 1. Check Sender
-        if from_address in self.threat_list:
-            score = 100
-            reasons.append("SENDER on threat list")
-        else:
-            reasons.append("Sender not on threat list")
-
-        # 2. Check Receiver
-        if to_address in self.threat_list:
-            score = 100
-            reasons.append("RECEIVER on threat list")
-        else:
-            reasons.append("Receiver not on threat list")
-
-        return {"score": score, "reasons": reasons}
-
-# --- Main Pipeline ---
-
-# Initialize agents (global instances for efficiency)
-agent_1 = Agent_1_Transaction_Monitor()
-agent_2 = Agent_2_Wallet_Monitor() # <-- MODIFIED: No longer needs DB_PATH
-agent_3 = Agent_3_Threat_Intel(THREAT_LIST_PATH)
-
-def process_transaction_pipeline(transaction_data):
+def agent_1_monitor(transaction: Dict) -> Dict:
     """
-    Runs a transaction through the multi-agent analysis pipeline.
+    Agent 1: Threat Intelligence & Heuristics
     """
-    
-    if not isinstance(transaction_data, dict):
-        print(f"Error: Invalid input to pipeline. Expected dict, got {type(transaction_data)}")
-        return None
-
-    processed_tx = transaction_data.copy()
+    score = 0
     reasons = []
+    dark_web_wallets = load_dark_web_wallets()
+    from_addr = transaction.get('from_address', '').lower()
+    to_addr = transaction.get('to_address', '').lower()
+    value_eth = transaction.get('value_eth', 0.0)
+    timestamp_str = transaction.get('timestamp')
+
+    # Known Threat List Check
+    if from_addr in dark_web_wallets:
+        score += 40
+        reasons.append(f"From-Wallet ({from_addr[:10]}...) on Threat List")
+
+    if to_addr in dark_web_wallets:
+        if to_addr in KNOWN_MIXER_ADDRESSES:
+            score += 50
+            reasons.append(f"To-Wallet ({to_addr[:10]}...) is a known Mixer")
+        else:
+            score += 40
+            reasons.append(f"To-Wallet ({to_addr[:10]}...) on Threat List")
+
+    # High Value Check (Simple Heuristic)
+    if value_eth > 100:
+        score += 20
+        reasons.append(f"Very high-value transaction: {value_eth:.4f} ETH")
+    elif value_eth > 50:
+        score += 10
+        reasons.append(f"High-value transaction: {value_eth:.4f} ETH")
+
+    # Small Repetitive Transfers (Stateful check)
+    if value_eth > 0 and value_eth < SMALL_TRANSFER_VALUE and from_addr:
+        now = datetime.now(UTC)
+        if from_addr not in RECENT_SMALL_TRANSFERS:
+            RECENT_SMALL_TRANSFERS[from_addr] = []
+        
+        RECENT_SMALL_TRANSFERS[from_addr] = [
+            ts for ts in RECENT_SMALL_TRANSFERS[from_addr] if now - ts <= TRANSFER_WINDOW
+        ]
+        
+        try:
+            current_ts = datetime.fromisoformat(timestamp_str.replace('Z', '')).replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            current_ts = now
+        
+        RECENT_SMALL_TRANSFERS[from_addr].append(current_ts)
+        
+        count = len(RECENT_SMALL_TRANSFERS[from_addr])
+        if count >= TRANSFER_THRESHOLD:
+            score += 15
+            reasons.append(f"High frequency of small transfers ({count})")
+
+    # High Gas Price Check
+    gas_price = transaction.get('gas_price', 0.0)
+    if gas_price > 200:
+        score += 10
+        reasons.append(f"Very high gas price: {gas_price:.2f} Gwei")
+
+    # Self-Transfer
+    if from_addr and to_addr and from_addr == to_addr and value_eth > 0:
+        score += 5
+        reasons.append("Self-transfer detected")
+
+    transaction['agent_1_score'] = min(score, 100) # Cap score
+    transaction['agent_1_reasons'] = reasons
+    return transaction
+
+
+def get_wallet_profile_from_db(conn, wallet_address):
+    """Helper to query the new V3 database schema."""
+    # Return default profile if conn is None (DB error)
+    if conn is None:
+        return {
+            'avg_sent': 0.001, 'tx_count_sent': 0, 'unique_recipients': 0,
+            'avg_time_between_tx': 86400.0, 'min_time_between_tx': 86400.0,
+            'tx_count_received': 0, 'total_received': 0.0, 'unique_senders': 0,
+        }
+        
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            avg_sent_value, tx_count_sent, unique_recipients, 
+            avg_time_between_tx, min_time_between_tx,
+            tx_count_received, total_received, unique_senders
+        FROM wallet_profiles 
+        WHERE wallet_address = ?
+    """, (wallet_address,))
     
-    # --- Run Agents ---
-    try:
-        agent_1_results = agent_1.analyze(processed_tx)
-        processed_tx['agent_1_score'] = agent_1_results['score']
-        reasons.extend(agent_1_results['reasons'])
-    except Exception as e:
-        print(f"Error in Agent 1: {e}")
-        processed_tx['agent_1_score'] = 0
-        reasons.append("Agent 1 Error")
+    result = cursor.fetchone()
+    if result:
+        return {
+            'avg_sent': float(result[0]) if result[0] else 0.001,
+            'tx_count_sent': int(result[1]) if result[1] else 0,
+            'unique_recipients': int(result[2]) if result[2] else 0,
+            'avg_time_between_tx': float(result[3]) if result[3] else 86400.0,
+            'min_time_between_tx': float(result[4]) if result[4] else 86400.0,
+            'tx_count_received': int(result[5]) if result[5] else 0,
+            'total_received': float(result[6]) if result[6] else 0.0,
+            'unique_senders': int(result[7]) if result[7] else 0,
+        }
+    else:
+        # Return default profile for unseen wallets
+        return {
+            'avg_sent': 0.001, 'tx_count_sent': 0, 'unique_recipients': 0,
+            'avg_time_between_tx': 86400.0, 'min_time_between_tx': 86400.0,
+            'tx_count_received': 0, 'total_received': 0.0, 'unique_senders': 0,
+        }
 
-    try:
-        agent_2_results = agent_2.analyze(processed_tx) # <-- This now calls the new live agent
-        processed_tx['agent_2_score'] = agent_2_results['score']
-        reasons.extend(agent_2_results['reasons'])
-    except Exception as e:
-        print(f"Error in Agent 2: {e}")
-        processed_tx['agent_2_score'] = 0
-        reasons.append("Agent 2 Error")
 
-    try:
-        agent_3_results = agent_3.analyze(processed_tx)
-        processed_tx['agent_3_score'] = agent_3_results['score']
-        reasons.extend(agent_3_results['reasons'])
-    except Exception as e:
-        print(f"Error in Agent 3: {e}")
-        processed_tx['agent_3_score'] = 0
-        reasons.append("Agent 3 Error")
+def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
+    """
+    V3: Engineer features that EXACTLY match V3 training data.
+    """
+    from_addr = transaction.get('from_address', '').lower()
+    to_addr = transaction.get('to_address', '').lower()
+    value = transaction.get('value_eth', 0.0)
+    gas = transaction.get('gas_price', 0.0)
 
-    # --- Final Aggregation ---
-    scores = [
-        processed_tx.get('agent_1_score', 0),
-        processed_tx.get('agent_2_score', 0),
-        processed_tx.get('agent_3_score', 0)
-    ]
+    threat_set = load_dark_web_wallets()
+
+    # Basic features (0-2)
+    feat = [value, gas, value * gas]
+
+    # Threat intelligence (3-4)
+    feat.extend([
+        1 if from_addr in threat_set else 0,
+        1 if to_addr in threat_set else 0,
+    ])
+
+    # Profile features from DB (5-17)
+    sender_profile = {}
+    receiver_profile = {}
     
-    if 100 in scores:
-        final_score = 100
+    if DB_PATH.exists():
+        try:
+            with sqlite3.connect(str(DB_PATH)) as conn:
+                sender_profile = get_wallet_profile_from_db(conn, from_addr)
+                receiver_profile = get_wallet_profile_from_db(conn, to_addr)
+        except Exception as e:
+            print(f"DB error in feature engineering: {e}")
+            sender_profile = get_wallet_profile_from_db(None, None)
+            receiver_profile = get_wallet_profile_from_db(None, None)
     else:
-        final_score = sum(scores) / len(scores) if scores else 0
+        print(f"Warning: {DB_PATH} not found. Using default profiles.")
+        sender_profile = get_wallet_profile_from_db(None, None)
+        receiver_profile = get_wallet_profile_from_db(None, None)
 
-    # Determine final status
-    if final_score >= 90:
-        final_status = "DENY"
-    elif final_score >= 60:
-        final_status = "FLAG_FOR_REVIEW"
+    # Sender profile (5-9)
+    sender_avg_sent = sender_profile['avg_sent']
+    sender_tx_count = sender_profile['tx_count_sent']
+    sender_unique_recipients = sender_profile['unique_recipients']
+    
+    feat.extend([
+        sender_tx_count,
+        sender_avg_sent,
+        value / max(sender_avg_sent, 0.001),
+        sender_unique_recipients,
+        sender_unique_recipients / max(1, sender_tx_count) # Recipient diversity
+    ])
+    
+    # Receiver profile (10-12)
+    feat.extend([
+        receiver_profile['tx_count_received'],
+        receiver_profile['total_received'],
+        receiver_profile['unique_senders']
+    ])
+    
+    # Temporal features (13-15)
+    try:
+        ts = datetime.fromisoformat(transaction.get('timestamp', '').replace('Z', ''))
+        hour, weekday = ts.hour, ts.weekday()
+        odd_hours = 1 if 2 <= hour <= 5 else 0
+    except:
+        hour, weekday, odd_hours = 12, 3, 0
+    feat.extend([hour, weekday, odd_hours])
+
+    # Sender temporal features (16-17)
+    feat.extend([
+        sender_profile['avg_time_between_tx'],
+        sender_profile['min_time_between_tx']
+    ])
+    
+    # Pattern features (18-25)
+    feat.extend([
+        1 if value > 100 else 0,
+        1 if value > 50 else 0,
+        1 if value < 0.1 else 0,
+        1 if gas > 150 else 0,
+        1 if gas < 30 else 0,
+        gas / max(value, 0.001),
+        1 if from_addr == to_addr else 0,
+        1 if (value > 0 and (value * 100) % 100 < 0.01) else 0,
+    ])
+
+    if len(feat) != 26:
+        print(f"ERROR: Feature engineering created {len(feat)} features, expected 26.")
+        
+    return np.array(feat).reshape(1, -1)
+
+
+def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
+    """
+    Agent 2: Behavioral Profiler (ML Model)
+    Priority for loading model:
+    1. `model_timestamp` param (used for direct testing)
+    2. `FORCED_MODEL_TIMESTAMP` global (read from sys.argv)
+    3. `latest_model_timestamp.txt` (default)
+    """
+    score = 0
+    reasons = []
+
+    # --- 1. Load Model, Scaler, and Metadata ---
+    effective_timestamp = model_timestamp or FORCED_MODEL_TIMESTAMP 
+
+    if effective_timestamp:
+        model_path = PROJECT_ROOT / 'models' / f'fraud_model_{effective_timestamp}.pkl'
+        scaler_path = PROJECT_ROOT / 'models' / f'scaler_{effective_timestamp}.pkl'
+        metadata_path = PROJECT_ROOT / 'models' / f'model_metadata_{effective_timestamp}.json'
     else:
-        final_status = "APPROVE"
+        try:
+            with open(PROJECT_ROOT / 'models' / 'latest_model_timestamp.txt', 'r') as f:
+                latest_timestamp = f.read().strip()
+            effective_timestamp = latest_timestamp # For logging
+            model_path = PROJECT_ROOT / 'models' / f'fraud_model_{latest_timestamp}.pkl'
+            scaler_path = PROJECT_ROOT / 'models' / f'scaler_{latest_timestamp}.pkl'
+            metadata_path = PROJECT_ROOT / 'models' / f'model_metadata_{latest_timestamp}.json'
+        except FileNotFoundError:
+            print("Warning: 'latest_model_timestamp.txt' not found. Using default paths.")
+            model_path = PROJECT_ROOT / 'models' / 'fraud_model.pkl'
+            scaler_path = PROJECT_ROOT / 'models' / 'scaler.pkl'
+            metadata_path = PROJECT_ROOT / 'models' / 'model_metadata.json'
+            effective_timestamp = "default"
 
-    processed_tx['reasons'] = "; ".join(reasons)
-    processed_tx['final_score'] = final_score
-    processed_tx['final_status'] = final_status
+    optimal_threshold = 0.5
+    try:
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                optimal_threshold = metadata.get('optimal_threshold', 0.5)
+        else:
+            print(f"Warning: Metadata file not found at {metadata_path}")
+    except Exception as e:
+        print(f"Warning: Could not load metadata. Using 0.5 threshold. Error: {e}")
 
-    if 'ml_fraud_probability' not in processed_tx:
-         processed_tx['ml_fraud_probability'] = None
-         
-    if 'is_fraud' not in processed_tx:
-        processed_tx['is_fraud'] = None
+    # --- 2. ML Model Prediction ---
+    if model_path.exists() and scaler_path.exists():
+        try:
+            with open(model_path, 'rb') as f: model = pickle.load(f)
+            with open(scaler_path, 'rb') as f: scaler = pickle.load(f)
 
+            features = engineer_features_for_prediction(transaction)
+            features_scaled = scaler.transform(features)
+
+            probability = model.predict_proba(features_scaled)[0]
+            fraud_probability = probability[1] if len(probability) > 1 else 0.0
+            prediction = 1 if fraud_probability >= optimal_threshold else 0
+            
+            model_id = f" (Model: {effective_timestamp})"
+            
+            if fraud_probability >= 0.90:
+                score += 60
+                reasons.append(f"ML: Very High Fraud Risk ({fraud_probability:.1%}){model_id}")
+            elif fraud_probability >= 0.75:
+                score += 40
+                reasons.append(f"ML: High Fraud Risk ({fraud_probability:.1%}){model_id}")
+            elif fraud_probability >= 0.60:
+                score += 25
+                reasons.append(f"ML: Moderate Fraud Risk ({fraud_probability:.1%}){model_id}")
+            elif fraud_probability >= optimal_threshold:
+                score += 10
+                reasons.append(f"ML: Elevated Fraud Risk ({fraud_probability:.1%}){model_id}")
+
+            transaction['ml_fraud_probability'] = round(fraud_probability, 4)
+            transaction['ml_prediction'] = prediction
+
+        except Exception as e:
+            print(f"Warning: Error using ML model: {e}")
+            transaction['ml_fraud_probability'] = -1.0
+            transaction['ml_prediction'] = -1
+    else:
+        print(f"Warning: Model/Scaler not found. ML agent returning 0.")
+        print(f"  Model: {model_path} (Exists: {model_path.exists()})")
+        print(f"  Scaler: {scaler_path} (Exists: {scaler_path.exists()})")
+        transaction['ml_fraud_probability'] = -1.0
+        transaction['ml_prediction'] = -1
+
+    transaction['agent_2_score'] = min(score, 100) # Cap score
+    transaction['agent_2_reasons'] = reasons
+    return transaction
+
+
+def agent_4_decision(transaction: Dict) -> Dict:
+    """
+    Agent 4: Decision Aggregator
+    """
+    agent_1_score = transaction.get('agent_1_score', 0)
+    agent_2_score = transaction.get('agent_2_score', 0)
+    agent_3_score = transaction.get('agent_3_score', 0)
+
+    final_score = (agent_1_score * 0.8) + (agent_2_score * 1.2) + (agent_3_score * 0.5)
+    all_reasons = []
+    all_reasons.extend(transaction.get('agent_1_reasons', []))
+    all_reasons.extend(transaction.get('agent_2_reasons', []))
+    all_reasons.extend(transaction.get('agent_3_reasons', []))
+    final_score = round(min(final_score, 150.0), 1)
+
+    DENY_THRESHOLD = 75
+    REVIEW_THRESHOLD = 45
+
+    if final_score >= DENY_THRESHOLD:
+        status = "DENY"
+    elif final_score >= REVIEW_THRESHOLD:
+        status = "FLAG_FOR_REVIEW"
+    else:
+        status = "APPROVE"
+
+    transaction['final_score'] = final_score
+    transaction['final_status'] = status
+    transaction['reasons'] = " | ".join(all_reasons) if all_reasons else "No flags detected"
+    return transaction
+
+
+def process_transaction_pipeline(transaction: Dict, model_timestamp: str = None) -> Dict:
+    """Pass transaction through the complete agent pipeline"""
+    processed_tx = agent_1_monitor(transaction.copy())
+    processed_tx = agent_2_behavioral(processed_tx, model_timestamp=model_timestamp)
+    processed_tx = agent_3_network(processed_tx)
+    processed_tx = agent_4_decision(processed_tx)
+    if 'is_fraud' in transaction:
+        processed_tx['is_fraud'] = transaction['is_fraud']
     return processed_tx
+
+
+def get_system_thresholds():
+    """Returns current system thresholds"""
+    return {
+        "agent_4_decision": { "deny_threshold": 75, "review_threshold": 45, "approve_threshold": 0 },
+        "agent_1_threat": { "threat_list_match": 40, "mixer_match": 50, },
+        "agent_2_behavioral_ml": { "very_high_risk": 60, "high_risk": 40, "moderate_risk": 25, }
+    }
+
+
+def analyze_transaction(tx_hash: str, transaction: Dict, model_timestamp: str = None) -> Dict:
+    """Detailed analysis function for debugging"""
+    processed = process_transaction_pipeline(transaction.copy(), model_timestamp=model_timestamp)
+    analysis = {
+        "tx_hash": tx_hash,
+        "final_status": processed.get('final_status'),
+        "final_score": processed.get('final_score'),
+        "breakdown": {
+            "agent_1": { "score": processed.get('agent_1_score', 0), "reasons": processed.get('agent_1_reasons', []) },
+            "agent_2": { "score": processed.get('agent_2_score', 0), "reasons": processed.get('agent_2_reasons', []), "ml_probability": processed.get('ml_fraud_probability', 0) },
+            "agent_3": { "score": processed.get('agent_3_score', 0), "reasons": processed.get('agent_3_reasons', []) }
+        },
+        "transaction_data": { "from": transaction.get('from_address'), "to": transaction.get('to_address'), "value": transaction.get('value_eth'), "gas": transaction.get('gas_price') }
+    }
+    return analysis
+
+
+if __name__ == "__main__":
+    """
+    Test block for running `python agents.py` directly.
+    The command-line argument logic at the top of the file
+    will be used to select the model for this test.
+    """
+    print("=" * 60)
+    print("Testing Agent Pipeline (V3.4)...")
+    
+    # The main script logic already set FORCED_MODEL_TIMESTAMP
+    # We just need to check if it exists
+    if FORCED_MODEL_TIMESTAMP:
+        print(f"[TEST MODE] Using model from command-line: {FORCED_MODEL_TIMESTAMP}")
+    else:
+        print("[TEST MODE] Using 'latest' model (no argument provided)")
+    print("=" * 60)
+    
+    if not DB_PATH.exists() or not THREAT_FILE_PATH.exists():
+        print("ERROR: Database or threat list not found.")
+        print(f"Please run 'initialize_and_train.py' first!")
+    else:
+        test_tx_normal = {
+            "tx_hash": "0xtest_normal_123",
+            "from_address": "0xnorm000000000000000000000000000000000000",
+            "to_address": "0xnorm000000000000000000000000000000000001",
+            "value_eth": 2.5, "gas_price": 50.0,
+            "timestamp": datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
+            "is_fraud": 0
+        }
+        test_tx_fraud = {
+            "tx_hash": "0xtest_fraud_456",
+            "from_address": "0xnorm000000000000000000000000000000000002",
+            "to_address": "0xbad0000000000000000000000000000000000000",
+            "value_eth": 150.5, "gas_price": 250.0,
+            "timestamp": datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
+            "is_fraud": 1
+        }
+
+        print("\n--- Testing NORMAL Transaction ---")
+        # No need to pass timestamp here, agent_2 will pick it up
+        result_normal = process_transaction_pipeline(test_tx_normal)
+        print(f"Final Status: {result_normal['final_status']}")
+        print(f"Final Score: {result_normal['final_score']}")
+        print(f"Reasons: {result_normal['reasons']}")
+        
+        print("\n--- Testing FRAUDULENT Transaction ---")
+        result_fraud = process_transaction_pipeline(test_tx_fraud)
+        print(f"Final Status: {result_fraud['final_status']}")
+        print(f"Final Score: {result_fraud['final_score']}")
+        print(f"Reasons: {result_fraud['reasons']}")
+        
+        print("=" * 60)
