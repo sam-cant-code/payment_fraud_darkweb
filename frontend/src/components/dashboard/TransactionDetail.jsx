@@ -26,13 +26,15 @@ const TransactionDetail = ({ transaction, onClose, onSubmitReview, isLoadingRevi
     timestamp,
     final_status,
     final_score,
-    reasons,
+    reasons, // The reasons string is already here
     agent_1_score,
     agent_2_score,
     agent_3_score, // Keep displaying if available, even if score is 0
   } = transaction;
 
-  const reasonsList = reasons ? reasons.split(' | ') : []; // Initialize as empty array
+  // Split the reasons string into an array
+  const reasonsList = reasons ? reasons.split(' | ').filter(reason => reason.trim() !== "" && !reason.toLowerCase().includes("no flags detected") && !reason.toLowerCase().includes("no immediate network threats")) : [];
+
   const isApproved = final_status === 'APPROVE';
   const isDeny = final_status === 'DENY';
   const isReview = final_status === 'FLAG_FOR_REVIEW';
@@ -60,7 +62,7 @@ const TransactionDetail = ({ transaction, onClose, onSubmitReview, isLoadingRevi
 
   // Determine the max score based on whether Agent 3 contributes (use 130 if neutralized, 150 otherwise)
   // Assuming neutralization:
-  const MAX_POSSIBLE_SCORE = 130;
+  const MAX_POSSIBLE_SCORE = 150; // Use the actual max score from agent_4_decision (150)
 
   return (
     // Make it sticky within its column
@@ -139,40 +141,43 @@ const TransactionDetail = ({ transaction, onClose, onSubmitReview, isLoadingRevi
             </div>
         )}
 
-        {/* Reasons / Analysis Summary */}
+        {/* Reasons / Analysis Summary - MODIFIED SECTION */}
         <div>
           <h4 className="text-xs uppercase text-brand-gray font-semibold mb-2">
-            Analysis Summary
+            Analysis Summary & Reasons
           </h4>
           <div className="space-y-2">
             {/* Show specific message for clean Approved transactions */}
-            {isApproved && (reasonsList.length === 0 || (reasonsList.length === 1 && reasonsList[0].startsWith("No specific"))) ? (
+            {isApproved ? (
               <div className="text-sm bg-status-approve-bg text-status-approve-text p-3 rounded-md border border-status-approve-text font-medium">
-                ✅ Approved: Low risk score detected. No significant flags raised by analysis agents.
+                ✅ Approved: Low risk score detected. No significant flags raised.
               </div>
             ) : (
-              // Otherwise, display the reasons provided
-              reasonsList.map((reason, i) => (
-                <div key={i} className={`text-sm p-3 rounded-md border ${
-                    // Use background/border based on severity inferred from keywords
-                    reason.includes('Dark Web') || reason.includes('DENY') || reason.includes('Very high-value')
-                    ? 'bg-status-deny-bg border-status-deny-text text-status-deny-text'
-                    : reason.includes('anomaly') || reason.includes('higher than wallet avg') || reason.includes('High-value') || reason.includes('linked to known threat')
-                    ? 'bg-status-review-bg border-status-review-text text-status-review-text'
-                    : 'bg-slate-100 border-slate-200 text-slate-700' // Default style
-                }`}>
-                  {reason}
-                </div>
-              ))
-            )}
-             {/* Handle case where reasons might be unexpectedly empty for non-approved */}
-             {reasonsList.length === 0 && !isApproved && (
+              // Otherwise, display the reasons if available
+              reasonsList.length > 0 ? (
+                  reasonsList.map((reason, i) => (
+                    <div key={i} className={`text-sm p-3 rounded-md border ${
+                        // Use background/border based on severity inferred from keywords
+                        reason.toLowerCase().includes('mixer') || reason.toLowerCase().includes('threat list') || reason.toLowerCase().includes('extreme deviation') || reason.toLowerCase().includes('circular transfer')
+                        ? 'bg-status-deny-bg border-status-deny-text text-status-deny-text'
+                        : reason.toLowerCase().includes('high value') || reason.toLowerCase().includes('high gas') || reason.toLowerCase().includes('deviation') || reason.toLowerCase().includes('high fan') || reason.toLowerCase().includes('ml model')
+                        ? 'bg-status-review-bg border-status-review-text text-status-review-text'
+                        : 'bg-slate-100 border-slate-200 text-slate-700' // Default style
+                    }`}>
+                      {reason}
+                    </div>
+                  ))
+              ) : (
+                 // Handle case where reasons might be unexpectedly empty for non-approved
                  <div className="text-sm bg-slate-100 p-3 rounded-md border border-slate-200 text-slate-500 italic">
-                    No specific reasons provided by agents for this status.
+                    Flagged, but no specific reasons provided by agents.
                  </div>
-             )}
+             )
+            )}
           </div>
         </div>
+        {/* END MODIFIED SECTION */}
+
 
         {/* Agent Scores */}
         <div>
