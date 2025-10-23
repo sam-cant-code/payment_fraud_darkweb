@@ -1,3 +1,4 @@
+// frontend/src/pages/DashboardPage.jsx
 import React, { useState, useMemo, useEffect } from 'react';
 import MetricsGrid from '../components/dashboard/MetricsGrid';
 import RiskGauge from '../components/charts/RiskGauge';
@@ -6,102 +7,114 @@ import RiskTimeline from '../components/charts/RiskTimeline';
 import TransactionsTable from '../components/dashboard/TransactionsTable';
 import TransactionDetail from '../components/dashboard/TransactionDetail';
 import Loader from '../components/shared/Loader';
-import { AlertCircle, BarChart2 } from 'lucide-react'; // Removed RefreshCw if not used
+import { AlertCircle, BarChart2, Filter, XCircle, ChevronDown } from 'lucide-react';
+import { useTransactionStore } from '../store/transactionStore';
 
-// Added onSubmitReview prop, isLoadingReview for detail view
-const DashboardPage = ({ transactions, loading, error, onSubmitReview, isLoadingReview }) => {
+const DashboardPage = ({ onSubmitReview, isLoadingReview }) => {
+  // --- Zustand State ---
+  const {
+    allTransactions,
+    filteredTransactions,
+    filters,
+    setFilter,
+    clearFilters
+  } = useTransactionStore();
+
+  // --- Local UI State ---
   const [selectedTx, setSelectedTx] = useState(null);
+  const [showFilters, setShowFilters] = useState(false); // This state is now toggled by the child
+  
+  const isLoadingInitial = useTransactionStore(state => state.allTransactions.length === 0 && !state.filters.sender && !state.filters.receiver);
 
-  // Memoize calculations for stats based on the current transactions list
+  // Memoize calculations (no changes here)
   const stats = useMemo(() => {
-     if (!transactions || transactions.length === 0) {
-      // Return zeroed stats if no transactions
+     if (!allTransactions || allTransactions.length === 0) {
       return { totalScanned: 0, denied: 0, review: 0, approved: 0, totalValue: 0, avgScore: 0 };
     }
-    const denied = transactions.filter((t) => t.final_status === 'DENY').length;
-    const review = transactions.filter((t) => t.final_status === 'FLAG_FOR_REVIEW').length;
-    const approved = transactions.filter((t) => t.final_status === 'APPROVE').length; // Calculate approved count
-    const totalValue = transactions.reduce((acc, t) => acc + (t.value_eth || 0), 0);
-    const avgScore = transactions.length > 0
-        ? (transactions.reduce((acc, t) => acc + (t.final_score || 0), 0) / transactions.length)
+    const denied = allTransactions.filter((t) => t.final_status === 'DENY').length;
+    const review = allTransactions.filter((t) => t.final_status === 'FLAG_FOR_REVIEW').length;
+    const approved = allTransactions.filter((t) => t.final_status === 'APPROVE').length;
+    const totalValue = allTransactions.reduce((acc, t) => acc + (t.value_eth || 0), 0);
+    const avgScore = allTransactions.length > 0
+        ? (allTransactions.reduce((acc, t) => acc + (t.final_score || 0), 0) / allTransactions.length)
         : 0;
 
     return {
-        totalScanned: transactions.length, // Changed from totalFlagged
+        totalScanned: allTransactions.length,
         denied,
         review,
-        approved, // Include approved count
+        approved,
         totalValue,
         avgScore
     };
-  }, [transactions]);
+  }, [allTransactions]);
 
-  // Handle transaction selection
+  // Handle transaction selection (no changes here)
   const handleRowClick = (tx) => {
     setSelectedTx(tx);
   };
 
-   // Effect to update or clear selected transaction if the main list changes
+   // Effect to update selected transaction (no changes here)
    useEffect(() => {
     if (selectedTx) {
-      const updatedTxInList = transactions.find(tx => tx.tx_hash === selectedTx.tx_hash);
+      const updatedTxInList = filteredTransactions.find(tx => tx.tx_hash === selectedTx.tx_hash);
       if (!updatedTxInList) {
-        setSelectedTx(null); // Clear selection if it's no longer in the list (e.g., due to MAX_TRANSACTIONS limit)
+        setSelectedTx(null);
       } else if (JSON.stringify(updatedTxInList) !== JSON.stringify(selectedTx)) {
-        // If the transaction data has changed (e.g., status updated via review), update the detail view
         setSelectedTx(updatedTxInList);
       }
     }
-  }, [transactions, selectedTx]);
+    else if (filteredTransactions.length === 0 && selectedTx) {
+       setSelectedTx(null);
+    }
+  }, [filteredTransactions, selectedTx]);
 
 
-  // Initial loading state display
-  if (loading) {
+  // Handle filter input changes (no changes here)
+  const handleFilterChange = (e) => {
+    const { name, value } = e.target;
+    if (name === 'minValue' || name === 'maxValue' || name === 'minRisk' || name === 'maxRisk') {
+      const numValue = value === '' ? null : parseFloat(value);
+      if (!isNaN(numValue) || numValue === null) {
+        setFilter(name, numValue);
+      }
+    } else {
+      setFilter(name, value);
+    }
+  };
+
+
+  // Render Loading state (no changes here)
+  if (isLoadingInitial && allTransactions.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader text="Loading Initial Transaction Data..." /> {/* Updated text */}
+        <Loader text="Loading Initial Transaction Data..." />
       </div>
     );
   }
 
-  // Error state display (if error occurred during initial load)
-  if (error && transactions.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-center text-brand-gray bg-white p-8 rounded-lg shadow-md">
-        <AlertCircle className="w-16 h-16 text-status-review-text mb-4" />
-        <h2 className="text-2xl font-semibold text-slate-800 mb-2">Error Loading Data</h2>
-        <p className="mb-4">
-          Could not load initial transaction data. Please check the backend connection and status, or try running the setup again.
-        </p>
-        {/* Display specific error message */}
-        <p className="text-sm text-slate-500">({typeof error === 'string' ? error : 'Check console for details'})</p>
-      </div>
-    );
-  }
-
-  // State when monitoring is active but no transactions have been scanned yet
-  if (!loading && transactions.length === 0 && !error) {
+  // Render No Transactions state (no changes here)
+  if (allTransactions.length === 0) {
      return (
       <div className="flex flex-col items-center justify-center h-full text-center text-brand-gray bg-white p-8 rounded-lg shadow-md">
         <BarChart2 className="w-16 h-16 text-status-approve-text mb-4" />
         <h2 className="text-2xl font-semibold text-slate-800 mb-2">Monitoring Blockchain...</h2>
-        {/* Updated message */}
-        <p>Waiting for new transactions. Scanned transactions (including Approved, Flagged, and Denied) will appear here automatically.</p>
+        <p>Waiting for new transactions. Scanned transactions will appear here automatically.</p>
       </div>
     );
   }
 
-  // Main dashboard display when transactions are available
+  // Main dashboard display
   return (
     <div className="space-y-6">
-      {/* 1. Key Metrics - Pass calculated stats */}
+      {/* 1. Key Metrics (no changes) */}
       <MetricsGrid stats={stats} />
 
-      {/* 2. Charts */}
+      {/* 2. Charts (no changes) */}
        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex flex-col">
           <h3 className="text-lg font-semibold text-slate-800 mb-2">
-            Average Risk Score
+            Average Risk Score (All Scanned)
           </h3>
           <div className="flex-grow flex items-center justify-center">
              <RiskGauge score={stats.avgScore} />
@@ -109,49 +122,152 @@ const DashboardPage = ({ transactions, loading, error, onSubmitReview, isLoading
         </div>
         <div className="lg:col-span-2 bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex flex-col">
           <h3 className="text-lg font-semibold text-slate-800 mb-2">
-            Status Distribution (Scanned)
+            Status Distribution (All Scanned)
           </h3>
            <div className="flex-grow flex items-center justify-center">
-             {/* Pass the calculated stats directly */}
              <StatusDistribution data={stats} />
            </div>
         </div>
       </div>
 
-
-      {/* 3. Timeline Chart */}
+      {/* 4. Timeline Chart (no changes) */}
        <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
          <h3 className="text-lg font-semibold text-slate-800 mb-2">
-            Risk Score Timeline (Last {transactions.length} Scanned) {/* Updated Title */}
+            Risk Score Timeline ({filteredTransactions.length} Filtered)
           </h3>
-        {/* Ensure data passed to timeline is sorted chronologically (oldest first) */}
-        <RiskTimeline data={[...transactions].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))} />
+        <RiskTimeline data={[...filteredTransactions].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))} />
       </div>
 
 
-      {/* 4. Transactions Table & Detail */}
+      {/* 5. Transactions Table & Detail (MODIFIED) */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
-          <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-slate-800">
-                Scanned Transactions (Real-time) {/* Updated Title */}
-              </h3>
-              {/* Optional: Manual refresh button (less needed now) */}
-              {/* <button onClick={onRefresh} className="text-sm text-brand-blue hover:underline p-1"><RefreshCw className="w-4 h-4 inline mr-1"/> Refresh List</button> */}
+          
+          {/* --- The "Dropdown" Panel --- */}
+          {/* This panel now appears when showFilters is true */}
+          {showFilters && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-4 mb-4 border-b border-slate-200">
+                  {/* Text Inputs */}
+                  <input
+                      type="text"
+                      name="sender"
+                      placeholder="Filter by Sender (address)"
+                      value={filters.sender}
+                      onChange={handleFilterChange}
+                      className="p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                  />
+                  <input
+                      type="text"
+                      name="receiver"
+                      placeholder="Filter by Receiver (address)"
+                      value={filters.receiver}
+                      onChange={handleFilterChange}
+                       className="p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                  />
+                   <input
+                      type="text"
+                      name="txHash"
+                      placeholder="Filter by Tx Hash"
+                      value={filters.txHash}
+                      onChange={handleFilterChange}
+                       className="p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                  />
+                   {/* Value Range */}
+                   <div className="flex items-center gap-2">
+                     <input
+                         type="number"
+                         name="minValue"
+                         placeholder="Min Value (ETH)"
+                         value={filters.minValue ?? ''}
+                         onChange={handleFilterChange}
+                         min="0"
+                         step="0.01"
+                         className="w-1/2 p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                     />
+                     <span>-</span>
+                     <input
+                         type="number"
+                         name="maxValue"
+                         placeholder="Max Value (ETH)"
+                         value={filters.maxValue ?? ''}
+                         onChange={handleFilterChange}
+                         min="0"
+                         step="0.01"
+                         className="w-1/2 p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                     />
+                   </div>
+                   {/* Risk Range */}
+                    <div className="flex items-center gap-2">
+                     <input
+                         type="number"
+                         name="minRisk"
+                         placeholder="Min Risk"
+                         value={filters.minRisk ?? ''}
+                         onChange={handleFilterChange}
+                         min="0"
+                         max="150"
+                         step="1"
+                         className="w-1/2 p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                     />
+                     <span>-</span>
+                     <input
+                         type="number"
+                         name="maxRisk"
+                         placeholder="Max Risk"
+                         value={filters.maxRisk ?? ''}
+                         onChange={handleFilterChange}
+                         min="0"
+                         max="150"
+                         step="1"
+                         className="w-1/2 p-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-blue"
+                     />
+                   </div>
+                  {/* Clear Button */}
+                  <button
+                      onClick={clearFilters}
+                      className="col-span-1 flex items-center justify-center gap-1 p-2 bg-slate-100 text-slate-600 rounded-md hover:bg-slate-200 text-sm font-medium"
+                  >
+                     <XCircle className="w-4 h-4" /> Clear Filters
+                  </button>
+              </div>
+          )}
+          {/* --- End of "Dropdown" Panel --- */}
+
+
+          {/* The table component now renders its own title and the filter button */}
+          <div> 
+            {filteredTransactions.length > 0 ? (
+              <TransactionsTable
+                transactions={filteredTransactions}
+                onRowClick={handleRowClick}
+                selectedTxHash={selectedTx?.tx_hash}
+                // --- Pass state and handler to the table ---
+                onToggleFilters={() => setShowFilters(!showFilters)}
+                isFilterOpen={showFilters}
+              />
+            ) : (
+              // Show this if filters result in 0 transactions
+              <div>
+                {/* We still need the header/button on top */}
+                 <TransactionsTable
+                    transactions={[]}
+                    onRowClick={() => {}}
+                    selectedTxHash={null}
+                    onToggleFilters={() => setShowFilters(!showFilters)}
+                    isFilterOpen={showFilters}
+                  />
+                 <p className="text-center text-brand-gray py-8">No transactions match the current filters.</p>
+              </div>
+            )}
           </div>
-          <TransactionsTable
-            transactions={transactions} // Already sorted newest first by hook
-            onRowClick={handleRowClick}
-            selectedTxHash={selectedTx?.tx_hash}
-          />
+
         </div>
         <div className="xl:col-span-1">
-          {/* Pass the specific loading state for reviews */}
           <TransactionDetail
             transaction={selectedTx}
             onClose={() => setSelectedTx(null)}
-            onSubmitReview={onSubmitReview} // Pass down review function
-            isLoadingReview={isLoadingReview} // Pass review loading state
+            onSubmitReview={onSubmitReview}
+            isLoadingReview={isLoadingReview}
           />
         </div>
       </div>

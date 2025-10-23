@@ -1,22 +1,24 @@
+// frontend/src/App.jsx
+// No changes needed here based on the provided code,
+// as DashboardPage now gets its data from the Zustand store.
+// Ensure useDashboard still returns necessary props like status, loading flags, error flags, runSetup, submitTxReview etc.
 import React from 'react';
 import Sidebar from './components/layout/Sidebar';
 import Header from './components/layout/Header';
 import DashboardPage from './pages/DashboardPage';
-import useDashboard from './hooks/useDashboard';
+import useDashboard from './hooks/useDashboard'; // Keep using the hook for status, actions etc.
 import Notification from './components/shared/Notification';
 
 function App() {
+  // Destructure what's still needed from the hook (status, actions, local loading/error)
   const {
     status,
-    transactions,
-    loading,
+    loading, // Keep loading flags for setup, review etc.
     error,
     notification,
     runSetup,
-    // runSimulation, // Removed
     clearNotification,
-    submitTxReview, // Pass review function down
-    // ... potentially pass other new functions if needed by children
+    submitTxReview,
   } = useDashboard();
 
   return (
@@ -24,21 +26,19 @@ function App() {
       <Sidebar
         status={status}
         runSetup={runSetup}
-        // Pass only the setup loading state
-        isLoading={loading.setup}
+        isLoading={loading.setup} // Pass specific loading flag
       />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header connectionStatus={status.websocket_connected} /> {/* Optional: Pass status to Header */}
+        <Header connectionStatus={status.websocket_connected} />
 
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-100 p-6 md:p-10">
+          {/* DashboardPage now uses Zustand internally for transactions */}
           <DashboardPage
-            transactions={transactions}
-            // Pass initial transaction loading state
-            loading={loading.transactions && transactions.length === 0} // Show loader only on initial load or if empty
-            error={error.transactions}
-            // onRefresh={fetchTransactions} // fetchTransactions now only loads initial, maybe remove refresh?
-            onSubmitReview={submitTxReview} // Pass down the review function
+            // Pass down actions and relevant loading/error states if needed by children
+            onSubmitReview={submitTxReview}
+            isLoadingReview={loading.review} // Pass the specific review loading state
+            // No need to pass transactions, loading.transactions, error.transactions anymore
           />
         </main>
       </div>
