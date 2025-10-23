@@ -29,7 +29,7 @@ const useDashboard = () => {
     status: true,
     setup: false,
     // simulation: false, // Removed
-    transactions: true, // For initial load
+    transactions: false, // For initial load - SET TO FALSE
     review: false,
     threats: true, // Load threats initially
     walletProfile: false,
@@ -83,6 +83,7 @@ const useDashboard = () => {
   }, [showNotification]); // Added missing dependency
 
   // Fetches the *initial* list of transactions from the CSV/DB log (now includes all statuses)
+  // THIS FUNCTION IS NO LONGER CALLED ON LOAD
   const fetchInitialTransactions = useCallback(async () => {
     setLoading((prev) => ({ ...prev, transactions: true }));
     setError((prev) => ({ ...prev, transactions: null }));
@@ -138,7 +139,8 @@ const useDashboard = () => {
       // After setup, fetch everything again to reflect new state
       await fetchStatus();
       await fetchThreatList();
-      await fetchInitialTransactions();
+      // We still don't fetch initial transactions here, wait for live ones
+      // await fetchInitialTransactions(); // <-- REMAINS COMMENTED
     } catch (err) {
       const errorMsg = err.response?.data?.error || 'Setup failed';
       setError((prev) => ({ ...prev, setup: errorMsg }));
@@ -147,8 +149,8 @@ const useDashboard = () => {
     } finally {
       setLoading((prev) => ({ ...prev, setup: false }));
     }
-    // Added fetchThreatList and fetchInitialTransactions to dependencies
-  }, [fetchStatus, showNotification, fetchThreatList, fetchInitialTransactions]);
+    // Added fetchThreatList, removed fetchInitialTransactions from dependencies
+  }, [fetchStatus, showNotification, fetchThreatList]);
 
   // runSimulation is no longer needed as a direct user action
 
@@ -232,16 +234,22 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
   // Effect for Initial Load and WebSocket Management
   useEffect(() => {
     const performInitialLoad = async () => {
-        console.log("Performing initial data load (expecting all statuses)...");
-        setLoading(prev => ({ ...prev, status: true, threats: true, transactions: true })); // Set all initial loads
+        console.log("Performing initial data load (SKIPPING transactions)...");
+        // Only set loading for status and threats
+        setLoading(prev => ({ ...prev, status: true, threats: true, transactions: false }));
         await fetchStatus();
         await fetchThreatList();
-        // Fetch initial transactions (now includes all statuses from CSV)
-        await fetchInitialTransactions(); // Renamed function call
-        // Removed conditional loading based on status, always load initial now
+        
+        // --- MODIFICATION ---
+        // We no longer fetch initial transactions to show only live data
+        // await fetchInitialTransactions(); 
+        console.log("Skipped initial transaction load.");
+        // --- END MODIFICATION ---
+
         isInitialLoadDone.current = true; // Mark initial load as done
-        setLoading(prev => ({ ...prev, status: false, threats: false, transactions: false })); // Clear initial loads
-        console.log("Initial data load complete.");
+        // Clear initial loads
+        setLoading(prev => ({ ...prev, status: false, threats: false, transactions: false }));
+        console.log("Initial data load complete (status and threats only).");
     };
 
     performInitialLoad();
@@ -327,7 +335,7 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
       // setStatus(prev => ({ ...prev, websocket_connected: false }));
     };
     // Ensure all useCallback-wrapped functions used in the effect are listed
-  }, [showNotification, fetchStatus, fetchThreatList, fetchInitialTransactions]);
+  }, [showNotification, fetchStatus, fetchThreatList]); // Removed fetchInitialTransactions from dependency array
 
 
   return {
@@ -338,7 +346,7 @@ const removeWalletFromThreats = useCallback(async (walletAddress) => {
     notification,
     runSetup, // Keep setup action
     // runSimulation, // Removed
-    fetchTransactions: fetchInitialTransactions, // Export renamed function
+    fetchTransactions: fetchInitialTransactions, // Export renamed function (can still be called manually if needed)
     clearNotification,
     threatList,
     selectedWalletProfile, // Export selected profile state

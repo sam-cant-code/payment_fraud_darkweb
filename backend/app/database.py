@@ -1,6 +1,9 @@
 """
 Database Management Module
 Handles schema creation and connection for the unified SQLite database.
+
+MODIFIED: Removed 'wallet_profiles' table as it's no longer needed.
+Live data is fetched by Agent_2 from Etherscan.
 """
 
 import sqlite3
@@ -35,17 +38,10 @@ def create_schema():
     )
     """)
 
-    # --- Wallet Historical Profiles ---
-    # *** MODIFICATION: Added 'first_seen' to match training script ***
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wallet_profiles (
-        wallet_address TEXT PRIMARY KEY,
-        avg_transaction_value REAL,
-        transaction_count INTEGER,
-        first_seen TEXT, 
-        last_updated TEXT
-    )
-    """)
+    # --- Wallet Historical Profiles (REMOVED) ---
+    # This table is no longer created as Agent_2 uses the live Etherscan API.
+    # We add a DROP TABLE command to clean up the old 'fake' table if it exists.
+    cursor.execute("DROP TABLE IF EXISTS wallet_profiles")
 
     # --- All Transactions Table ---
     # Replaces 'flagged_transactions'. We now store ALL results.
@@ -79,7 +75,7 @@ def create_schema():
 
     conn.commit()
     conn.close()
-    print("Database schema created/verified successfully.")
+    print("Database schema created/verified successfully. (Removed wallet_profiles table)")
 
 if __name__ == '__main__':
     # This allows running 'python -m app.database' from 'backend' folder

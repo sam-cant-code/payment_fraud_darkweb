@@ -4,31 +4,37 @@ import os
 import subprocess
 import sqlite3
 import pandas as pd
-import time
+import time # <-- Already present, needed for new API
 import random
 import threading
-from datetime import datetime, UTC # Added UTC
+from datetime import datetime, UTC 
 from flask import Flask, jsonify, abort, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from web3 import Web3
-# CORRECTED IMPORT for web3.py v6+
 from web3.providers import HTTPProvider
 from dotenv import load_dotenv
 
 # --- Load environment variables from .env file ---
-load_dotenv()
+# Make sure your .env file is in the 'backend' folder
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 # Import agent logic
-from app.agents import process_transaction_pipeline, load_dark_web_wallets # <--- THIS IS THE FIX
+# --- MODIFIED IMPORT ---
+from app.agents import process_transaction_pipeline, agent_2 # <-- Use the live agent_2
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/socket.io/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-OUTPUT_FILE = '../output/all_processed_transactions.csv' # <-- FIXED PATH
-DB_FILE = '../data/wallet_profiles.db' # <-- FIXED PATH
-THREAT_FILE = '../data/dark_web_wallets.txt' # <-- FIXED PATH
+# --- Path Definitions (Relative to this server.py file) ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
+OUTPUT_FILE = os.path.join(PROJECT_ROOT, 'output', 'all_processed_transactions.csv')
+DB_FILE = os.path.join(PROJECT_ROOT, 'data', 'wallet_profiles.db') # Still used for /api/status check
+THREAT_FILE = os.path.join(PROJECT_ROOT, 'data', 'dark_web_wallets.txt')
+MODEL_FILE = os.path.join(PROJECT_ROOT, 'models', 'behavior_model.pkl')
 PYTHON_EXE = 'python'
 
 # --- Alchemy Configuration ---
@@ -49,6 +55,7 @@ CSV_FIELDNAMES = [
     'tx_hash', 'from_address', 'to_address', 'value_eth', 'gas_price',
     'timestamp', 'final_status', 'final_score', 'reasons',
     'agent_1_score', 'agent_2_score', 'agent_3_score',
+    'ml_fraud_probability', # Added from simulation
     'is_fraud' # Added ground truth label column
 ]
 
@@ -81,8 +88,8 @@ def append_to_csv(filepath, transaction_dict, fieldnames):
             # Write header only if file is new or empty
             if not file_exists or os.path.getsize(filepath) == 0:
                 writer.writeheader()
-            # Ensure 'is_fraud' key exists, defaulting to empty if not present (for live data)
-            row_to_write = {**{key: '' for key in fieldnames}, **transaction_dict}
+            # Ensure all keys exist, defaulting to empty if not present
+            row_to_write = {key: transaction_dict.get(key, None) for key in fieldnames}
             writer.writerow(row_to_write)
     except (IOError, OSError, csv.Error, Exception) as e:
         print(f"Error appending to CSV {filepath}: {e}")
@@ -93,7 +100,11 @@ def update_csv_status(filepath, tx_hash, new_status, fieldnames):
         # Use global fieldnames
         expected_fieldnames = fieldnames
         try:
-            df = pd.read_csv(filepath, dtype={'is_fraud': 'Int64'}) # Read is_fraud as nullable Int
+            # Read all relevant types as nullable to preserve data
+            df = pd.read_csv(filepath, dtype={
+                'is_fraud': 'Int64', 
+                'ml_fraud_probability': 'float64'
+            })
         except (pd.errors.EmptyDataError, FileNotFoundError):
             df = pd.DataFrame(columns=expected_fieldnames)
             if not os.path.exists(filepath):
@@ -107,25 +118,26 @@ def update_csv_status(filepath, tx_hash, new_status, fieldnames):
         df.to_csv(filepath, index=False)
 
         updated_row_series = df[df['tx_hash'] == tx_hash].iloc[0]
-        # Use fillna appropriately, keep is_fraud potentially null (pd.NA)
+        # Use fillna appropriately
         updated_row = updated_row_series.fillna({
              'value_eth': 0.0, 'gas_price': 0.0, 'final_score': 0.0,
              'agent_1_score': 0.0, 'agent_2_score': 0.0, 'agent_3_score': 0.0,
+             'ml_fraud_probability': 0.0,
              'reasons': ''
              # Do not fillna 'is_fraud' here, keep it as loaded (could be NA)
         }).to_dict()
 
         # Convert numeric types
-        for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score']:
+        for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score', 'ml_fraud_probability']:
              try: updated_row[key] = float(updated_row[key])
              except (ValueError, TypeError): updated_row[key] = 0.0
         updated_row['reasons'] = str(updated_row.get('reasons', ''))
-        # Convert is_fraud NA to None for JSON compatibility if needed, or keep as is
+        
+        # Convert is_fraud NA to None for JSON compatibility
         if pd.isna(updated_row.get('is_fraud')):
              updated_row['is_fraud'] = None
         elif 'is_fraud' in updated_row:
              updated_row['is_fraud'] = int(updated_row['is_fraud']) # Ensure it's int if not None
-
 
         return updated_row
     except Exception as e:
@@ -157,9 +169,10 @@ def process_incoming_tx(tx_hash):
             "timestamp": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'), # Fixed deprecation
             "gas_limit": tx_data.get('gas', 0),
             "block_number": tx_data.get('blockNumber', None),
-            # is_fraud will NOT be present here as it's live data
+            # is_fraud & ml_fraud_probability will NOT be present here
         }
 
+        # This now calls the pipeline with the LIVE Etherscan agent
         processed_tx = process_transaction_pipeline(adapted_tx.copy())
         status = processed_tx.get('final_status')
         score = processed_tx.get('final_score', 0)
@@ -183,14 +196,12 @@ def process_incoming_tx(tx_hash):
             print(f"[Alchemy Listener] Error processing tx {tx_hash_hex[:10]}...: {e}")
 
 
-# --- Alchemy Listener Loop (No changes needed) ---
+# --- Alchemy Listener Loop ---
 def alchemy_listener_loop():
-    # ... (function remains the same) ...
     global alchemy_listener_running, w3
     print("[Alchemy Listener] Starting listener loop...")
     while alchemy_listener_running:
         try:
-            # Connect to Alchemy via HTTP
             w3 = Web3(HTTPProvider(ALCHEMY_HTTP_URL))
             if not w3.is_connected():
                 print("[Alchemy Listener] Failed to connect. Retrying in 10s...")
@@ -198,35 +209,30 @@ def alchemy_listener_loop():
                 continue
             print("[Alchemy Listener] Connected to Alchemy via HTTP.")
 
-            # Create a filter for pending transactions
             pending_tx_filter = w3.eth.filter('pending')
             print("[Alchemy Listener] Subscribed to pending transactions.")
 
-            # Poll the filter for new entries
             while alchemy_listener_running and w3.is_connected():
                 try:
                     new_tx_hashes = pending_tx_filter.get_new_entries()
                     if new_tx_hashes:
                         print(f"[Alchemy Listener] Received {len(new_tx_hashes)} new transaction hashes.")
                         for tx_hash in new_tx_hashes:
-                            # Process transactions sequentially for simplicity
                             process_incoming_tx(tx_hash)
-                            time.sleep(0.05) # Small delay
+                            time.sleep(0.05) 
 
-                    # Wait a short duration before polling again
-                    time.sleep(2) # Poll every 2 seconds
+                    time.sleep(2) 
 
                 except Exception as loop_err:
                     print(f"[Alchemy Listener] Error in polling loop: {loop_err}")
                     break
-
-            # If the loop breaks, disconnected or error.
+            
             print("[Alchemy Listener] Disconnected or polling loop error. Will attempt to reconnect...")
             w3 = None
             time.sleep(5)
 
         except Exception as e:
-            print(f"[Alchemy Listener] Major error in listener setup: {e}")
+            print(f"Major error in listener setup: {e}")
             w3 = None
             print("[Alchemy Listener] Retrying connection in 15 seconds...")
             time.sleep(15)
@@ -234,10 +240,9 @@ def alchemy_listener_loop():
     print("[Alchemy Listener] Listener loop stopped.")
 
 
-# --- SocketIO Events (No changes needed) ---
+# --- SocketIO Events ---
 @socketio.on('connect')
 def handle_connect():
-    # ... (function remains the same) ...
     global alchemy_thread, alchemy_listener_running
     print('Client connected:', request.sid)
     if not alchemy_listener_running and ALCHEMY_HTTP_URL != "YOUR_ALCHEMY_HTTP_URL":
@@ -245,49 +250,48 @@ def handle_connect():
         alchemy_listener_running = True
         alchemy_thread = threading.Thread(target=alchemy_listener_loop, daemon=True)
         alchemy_thread.start()
+    
     # Emit current status on connect
-    db_ready = os.path.exists(DB_FILE) # <-- FIXED PATH
-    threat_ready = os.path.exists(THREAT_FILE) # <-- FIXED PATH
-    output_exists = os.path.exists(OUTPUT_FILE) and os.path.getsize(OUTPUT_FILE) > 50 # <-- FIXED PATH
+    db_ready = os.path.exists(DB_FILE)
+    threat_ready = os.path.exists(THREAT_FILE)
+    output_exists = os.path.exists(OUTPUT_FILE) and os.path.getsize(OUTPUT_FILE) > 50 
     emit('status_update', {
         'websocket_connected': True,
         'listener_active': alchemy_listener_running,
-        'database_ready': db_ready,
+        'database_ready': db_ready, # Still indicates if setup was run
         'threat_list_available': threat_ready,
-        'has_flagged_data': output_exists # Reflects CSV state
+        'has_flagged_data': output_exists
     })
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    # ... (function remains the same) ...
     print('Client disconnected:', request.sid)
 
 
 # --- API Endpoints ---
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    # ... (function remains the same as previous corrected version) ...
-    db_file_exists = os.path.exists(DB_FILE) # <-- FIXED PATH
-    threat_file_exists = os.path.exists(THREAT_FILE) # <-- FIXED PATH
-    output_file_exists = os.path.exists(OUTPUT_FILE) # <-- FIXED PATH
+    db_file_exists = os.path.exists(DB_FILE)
+    threat_file_exists = os.path.exists(THREAT_FILE)
+    output_file_exists = os.path.exists(OUTPUT_FILE)
     has_data = output_file_exists and os.path.getsize(OUTPUT_FILE) > 50
 
     return jsonify({
-        'database_ready': db_file_exists,
-        'simulation_running': alchemy_listener_running, # Keep for compatibility if UI uses it
+        'database_ready': db_file_exists, # True if setup.bat was run
+        'simulation_running': alchemy_listener_running,
         'threat_list_available': threat_file_exists,
-        'has_flagged_data': has_data, # Reflects CSV having data
-        'listener_active': alchemy_listener_running # Specific listener status
+        'has_flagged_data': has_data, 
+        'listener_active': alchemy_listener_running
     })
 
 
 @app.route('/api/setup', methods=['POST'])
 def run_setup():
-    # ... (function remains the same as previous corrected version) ...
     try:
-        # Use the NEW script name
-        result = subprocess.run([PYTHON_EXE, 'scripts/initialize_and_train.py'], capture_output=True, text=True, check=True)
+        # Script path relative to PROJECT_ROOT
+        setup_script_path = os.path.join(PROJECT_ROOT, 'backend', 'scripts', 'initialize_and_train.py')
+        result = subprocess.run([PYTHON_EXE, setup_script_path], capture_output=True, text=True, check=True)
         print(result.stdout)
 
         # Ensure the output CSV exists with headers (using global fieldnames)
@@ -303,7 +307,7 @@ def run_setup():
         print(f"Setup Error Output: {e.stderr}")
         return jsonify({"error": f"An error occurred during setup: {e.stderr}"}), 500
     except FileNotFoundError:
-        return jsonify({"error": f"'{PYTHON_EXE}' or 'scripts/initialize_and_train.py' not found."}), 500
+        return jsonify({"error": f"'{PYTHON_EXE}' or '{setup_script_path}' not found."}), 500
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred during setup: {str(e)}"}), 500
 
@@ -315,8 +319,10 @@ def get_flagged_transactions():
         return jsonify([])
 
     try:
-        # Read is_fraud as nullable Int64
-        df = pd.read_csv(OUTPUT_FILE, dtype={'is_fraud': 'Int64'})
+        df = pd.read_csv(OUTPUT_FILE, dtype={
+            'is_fraud': 'Int64',
+            'ml_fraud_probability': 'float64'
+        })
         if df.empty:
             return jsonify([])
 
@@ -324,25 +330,24 @@ def get_flagged_transactions():
         df = df.fillna({
             'value_eth': 0.0, 'gas_price': 0.0, 'final_score': 0.0,
             'agent_1_score': 0.0, 'agent_2_score': 0.0, 'agent_3_score': 0.0,
+            'ml_fraud_probability': 0.0,
             'reasons': ''
-            # 'is_fraud' remains potentially pd.NA
         })
 
         transactions = df.to_dict('records')
 
         # Convert types and handle is_fraud NA -> None
         for row in transactions:
-            for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score']:
+            for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score', 'ml_fraud_probability']:
                 try: row[key] = float(row[key])
                 except (ValueError, TypeError): row[key] = 0.0
             row['reasons'] = str(row.get('reasons', ''))
-            # Convert is_fraud NA to None for JSON
+            
             if pd.isna(row.get('is_fraud')):
                  row['is_fraud'] = None
             elif 'is_fraud' in row:
-                 row['is_fraud'] = int(row['is_fraud']) # Ensure it's int
+                 row['is_fraud'] = int(row['is_fraud']) 
 
-        # Sort by timestamp descending
         transactions.sort(key=lambda x: x.get('timestamp', '1970-01-01T00:00:00Z'), reverse=True)
         return jsonify(transactions)
 
@@ -352,34 +357,40 @@ def get_flagged_transactions():
         print(f"Error reading transactions CSV: {e}")
         return jsonify({"error": f"Failed to read transaction data: {str(e)}"}), 500
 
-# --- /api/wallet/<address> (No changes needed) ---
-@app.route('/api/wallet/<address>', methods=['GET'])
-def get_wallet_profile(address):
-    # ... (function remains the same) ...
-    profile_db_path = DB_FILE # <-- FIXED PATH
-    if not os.path.exists(profile_db_path):
-        return jsonify({"error": "Wallet profiles database not found. Run setup."}), 404
+# --- /api/wallet/<address> (REPLACED) ---
+@app.route('/api/wallet-profile/<address>', methods=['GET'])
+def get_wallet_profile_api(address):
+    """
+    Fetches a wallet profile using the live Etherscan agent.
+    """
+    if not address:
+        return jsonify({"error": "No address provided"}), 400
     try:
-        conn = sqlite3.connect(profile_db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM wallet_profiles WHERE wallet_address = ?", (address.lower(),))
-        profile = cursor.fetchone()
-        conn.close()
+        # Use the agent_2's method, which includes caching
+        profile = agent_2.get_wallet_profile_from_etherscan(address)
+        
         if profile:
-            return jsonify(dict(profile))
+            # Calculate age_days for a nice API response
+            age_seconds = time.time() - profile['first_tx_timestamp']
+            profile['age_days'] = round(age_seconds / 86400, 2)
+            # Add a "human" name
+            profile['profile_name'] = f"Live Profile ({address[:6]}...{address[-4:]})"
+            # Add fields to match the old DB structure for the UI
+            profile['wallet_address'] = address
+            profile['historical_flagged_tx'] = "N/A (Live)" 
+            return jsonify(profile)
         else:
-            return jsonify({"message": "Wallet profile not found"}), 404
-    except sqlite3.Error as e:
-        return jsonify({"error": f"Database error: {e}"}), 500
+            # This could be an API error or a truly new/invalid address
+            return jsonify({"error": "Failed to fetch profile from Etherscan or address is invalid."}), 404
+            
     except Exception as e:
-         return jsonify({"error": f"Unexpected error fetching profile: {str(e)}"}), 500
+        print(f"Error in wallet profile API: {e}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
 
 
-# --- /api/review/<tx_hash> (No changes needed, uses global CSV_FIELDNAMES now) ---
+# --- /api/review/<tx_hash> (Uses global CSV_FIELDNAMES now) ---
 @app.route('/api/review/<tx_hash>', methods=['POST'])
 def submit_review(tx_hash):
-    # ... (function remains the same, uses global CSV_FIELDNAMES) ...
     data = request.get_json()
     new_status = data.get('status')
     if not new_status or new_status not in ['APPROVE', 'DENY', 'FLAG_FOR_REVIEW']:
@@ -397,21 +408,19 @@ def submit_review(tx_hash):
         return jsonify({"message": f"Transaction {tx_hash} status updated to {new_status}"}), 200
     else:
         try:
-            # Check if file exists before reading again for 404 check
             if os.path.exists(OUTPUT_FILE):
                 df = pd.read_csv(OUTPUT_FILE)
                 if tx_hash not in df['tx_hash'].values:
                     return jsonify({"error": f"Transaction hash {tx_hash} not found in the file."}), 404
-            else: # Should not happen based on earlier check, but belts and braces
+            else: 
                  return jsonify({"error": "Transaction file disappeared unexpectedly."}), 500
         except Exception:
-            pass # Fall through to generic error
+            pass 
         return jsonify({"error": "Failed to update transaction status. Check logs."}), 500
 
-# --- /api/threats endpoints (No changes needed) ---
+# --- /api/threats endpoints ---
 @app.route('/api/threats', methods=['GET'])
 def get_threats():
-    # ... (function remains the same) ...
     try:
         return jsonify(read_threat_list())
     except Exception as e:
@@ -419,7 +428,6 @@ def get_threats():
 
 @app.route('/api/threats', methods=['POST'])
 def add_threat():
-    # ... (function remains the same) ...
     data = request.get_json()
     new_wallet = data.get('wallet_address', '').strip().lower()
     if not new_wallet.startswith('0x') or len(new_wallet) != 42:
@@ -440,7 +448,6 @@ def add_threat():
 
 @app.route('/api/threats', methods=['DELETE'])
 def remove_threat():
-    # ... (function remains the same) ...
     data = request.get_json()
     wallet_to_remove = data.get('wallet_address', '').strip().lower()
     if not wallet_to_remove:
@@ -462,21 +469,19 @@ def remove_threat():
 
 # --- Main Execution ---
 if __name__ == '__main__':
-    # --- IMPORTANT ---
-    # Since this script is in backend/, and our data is in data/ (one level up),
-    # we need to make sure the paths are correct.
-    # The '../data' paths set at the top handle this, but for the
-    # initial startup check, we'll use the same relative paths.
-    
-    # We are in 'backend/', so we check '../data', '../output', etc.
-    os.makedirs('../data', exist_ok=True)
-    os.makedirs('../output', exist_ok=True)
-    os.makedirs('../models', exist_ok=True)
+    # Use the absolute paths defined at the top
+    os.makedirs(os.path.join(PROJECT_ROOT, 'data'), exist_ok=True)
+    os.makedirs(os.path.join(PROJECT_ROOT, 'output'), exist_ok=True)
+    os.makedirs(os.path.join(PROJECT_ROOT, 'models'), exist_ok=True)
 
-    if not os.path.exists(DB_FILE) or not os.path.exists(THREAT_FILE) or not os.path.exists('../models/behavior_model.pkl'): # <-- FIXED PATH
+    # Check if setup has been run
+    if not os.path.exists(DB_FILE) or not os.path.exists(THREAT_FILE) or not os.path.exists(MODEL_FILE):
         print("-" * 60)
         print("Warning: One or more data/model files missing.")
-        print("Please run the setup script ('setup.bat' or 'python scripts/initialize_and_train.py')") # <-- FIXED SCRIPT NAME
+        print(f"DB: {DB_FILE} (Exists: {os.path.exists(DB_FILE)})")
+        print(f"Threat: {THREAT_FILE} (Exists: {os.path.exists(THREAT_FILE)})")
+        print(f"Model: {MODEL_FILE} (Exists: {os.path.exists(MODEL_FILE)})")
+        print("Please run the setup script ('setup.bat' or 'python backend/scripts/initialize_and_train.py')")
         print("before starting the backend to ensure proper functionality.")
         print("-" * 60)
 
@@ -490,7 +495,6 @@ if __name__ == '__main__':
     print("Starting Flask-SocketIO server...")
     socketio.run(app, debug=True, port=5000, host='0.0.0.0', use_reloader=False)
 
-    # ... (Cleanup remains the same) ...
     alchemy_listener_running = False
     if alchemy_thread and alchemy_thread.is_alive():
         print("Waiting for Alchemy listener thread to stop...")
