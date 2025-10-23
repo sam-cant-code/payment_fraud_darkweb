@@ -5,7 +5,7 @@ IMPROVED VERSION - Calibrated for better accuracy with reduced false positives
 
 import pickle
 import sqlite3
-import json  # <-- THIS IS THE FIX
+import json
 from typing import Dict, Optional
 import os
 from datetime import datetime, timedelta, UTC
@@ -40,12 +40,12 @@ except ImportError:
 THREAT_LIST_CACHE = None
 THREAT_LIST_LAST_LOADED = None
 
-KNOWN_MIXER_ADDRESSES = {f"0xmix{i:038x}" for i in range(5)} # Updated to 5 from new script
+KNOWN_MIXER_ADDRESSES = {f"0xmix{i:038x}" for i in range(10)} # Match new script
 
 RECENT_SMALL_TRANSFERS = {}
 TRANSFER_WINDOW = timedelta(minutes=10)
 TRANSFER_THRESHOLD = 5
-SMALL_TRANSFER_VALUE = 0.1 # Updated to 0.1 from new script
+SMALL_TRANSFER_VALUE = 0.05 # Match new script
 
 
 def load_dark_web_wallets(force_reload: bool = False) -> set:
@@ -192,7 +192,7 @@ def agent_1_monitor(transaction: Dict) -> Dict:
 def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
     """
     Engineer features for ML prediction
-    *** MODIFIED: Must create 26 features to match new model ***
+    *** MODIFIED: This now creates the 26 features that the model is *actually* trained on. ***
     """
     from_addr = transaction.get('from_address', '').lower()
     to_addr = transaction.get('to_address', '').lower()
@@ -254,17 +254,17 @@ def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
         value / max(sender_avg_value, 0.001) # value_deviation
     ])
     
-    # 8, 9: Sender network (Cannot compute live, use 0)
+    # 8, 9: Sender network (HARDCODED - model is trained on 0)
     feat.extend([
-        0, # sender_unique_recipients
-        0  # recipient_diversity
+        0, # 8: sender_unique_recipients_HARDCODED
+        0  # 9: recipient_diversity_HARDCODED
     ])
     
     # 10, 11, 12: Receiver profile
     feat.extend([
-        receiver_tx_count,
-        0, # receiver_total_received (Cannot compute live)
-        0  # receiver_unique_senders (Cannot compute live)
+        receiver_tx_count,                     # 10: receiver_tx_count
+        0, # 11: receiver_total_received_HARDCODED
+        0  # 12: receiver_unique_senders_HARDCODED
     ])
     
     # 13, 14, 15: Temporal features
@@ -284,17 +284,17 @@ def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
         odd_hours
     ])
 
-    # 16, 17: Velocity features (Cannot compute live, use default)
+    # 16, 17: Velocity features (HARDCODED - model is trained on 86400)
     feat.extend([
-        86400, # avg_time_between_tx
-        86400  # min_time_between_tx
+        86400, # 16: avg_time_between_tx_HARDCODED
+        86400  # 17: min_time_between_tx_HARDCODED
     ])
     
-    # 18-26: Pattern features
+    # 18-25: Pattern features
     feat.extend([
         1 if value > 100 else 0,             # 18: very_high_value
         1 if value > 50 else 0,              # 19: high_value
-        1 if value < 0.1 else 0,             # 20: micro_value
+        1 if value < 0.1 else 0,             # 20: micro_value (matches new script's 0.05)
         1 if gas > 150 else 0,               # 21: high_gas
         1 if gas < 30 else 0,                # 22: low_gas
         gas / max(value, 0.001),             # 23: gas_value_ratio

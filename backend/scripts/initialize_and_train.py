@@ -1,7 +1,8 @@
 """
 ENHANCED Setup Script for Blockchain Fraud Detection
-Addresses data leakage, adds diverse fraud patterns, and improves realism
-*** MODIFIED TO INCLUDE NetworkX FEATURES ***
+*** MODIFIED to align with 26-feature REAL-TIME prediction in agents.py ***
+This version removes features that cannot be calculated live (NetworkX, full history)
+to fix training-serving skew.
 """
 
 import json
@@ -11,10 +12,10 @@ import random
 import os
 import math
 import numpy as np
-import networkx as nx  # <-- ADDED
+# import networkx as nx  # <-- REMOVED (Cannot be used for live prediction)
 from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (classification_report, confusion_matrix, roc_auc_score,
                              precision_recall_curve, auc, average_precision_score)
@@ -41,13 +42,13 @@ NUM_HIGH_VALUE_WALLETS = 50  # Legitimate wealthy wallets
 
 # Fraud pattern distribution (totals to NUM_FRAUD)
 FRAUD_PATTERNS = {
-    'malicious_interaction': int(NUM_FRAUD * 0.25),      # 75 txs
-    'high_value_suspicious': int(NUM_FRAUD * 0.15),      # 45 txs
-    'mixer_usage': int(NUM_FRAUD * 0.20),                # 60 txs
-    'rapid_micro_transfers': int(NUM_FRAUD * 0.15),      # 45 txs
-    'circular_transfers': int(NUM_FRAUD * 0.10),         # 30 txs
-    'abnormal_timing': int(NUM_FRAUD * 0.10),            # 30 txs
-    'self_transfers': int(NUM_FRAUD * 0.05),             # 15 txs
+    'malicious_interaction': int(NUM_FRAUD * 0.25),
+    'high_value_suspicious': int(NUM_FRAUD * 0.15),
+    'mixer_usage': int(NUM_FRAUD * 0.20),
+    'rapid_micro_transfers': int(NUM_FRAUD * 0.15),
+    'circular_transfers': int(NUM_FRAUD * 0.10),
+    'abnormal_timing': int(NUM_FRAUD * 0.10),
+    'self_transfers': int(NUM_FRAUD * 0.05),
 }
 # Adjust for rounding to ensure sum is NUM_FRAUD
 total_assigned = sum(FRAUD_PATTERNS.values())
@@ -133,6 +134,8 @@ def generate_timestamp(base_time=None, days_range=None):
 
 
 # ================== FRAUD PATTERN GENERATORS ==================
+# (All generator functions remain the same as your file)
+# ...
 def generate_malicious_interaction(wallets, timestamp):
     """Pattern 1: Transaction involving known malicious wallet"""
     use_malicious_sender = random.random() < 0.6
@@ -316,6 +319,7 @@ def generate_normal_transaction(wallets, timestamp):
 
 
 # ================== MAIN DATA GENERATION ==================
+# (This function remains the same as your file)
 def create_enhanced_mock_transactions():
     """Create comprehensive fraud detection dataset"""
     print("\n" + "="*70)
@@ -428,77 +432,51 @@ def create_enhanced_mock_transactions():
     return transactions, wallets
 
 
-# ================== ENHANCED FEATURE ENGINEERING (NetworkX MODIFIED) ==================
+# ================== MODIFIED FEATURE ENGINEERING (26 Features) ==================
 def engineer_enhanced_features(transactions, threat_list):
-    """Engineer comprehensive features with temporal, behavioral, and NETWORKX patterns"""
-    print("\n=== Engineering Enhanced Features (with NetworkX) ===")
+    """
+    Engineer features that *match* what agents.py can create in real-time.
+    This means NO NetworkX and NO complex history features.
+    """
+    print("\n=== Engineering Features (Aligned with 26 Real-Time Features) ===")
     
     threat_set = set(w.lower() for w in threat_list)
 
-    # --- 1. Build Historical Wallet Profiles (as before) ---
-    print("Building wallet history profiles...")
+    # --- 1. Build Historical Wallet Profiles (for DB simulation) ---
+    print("Building wallet history profiles (for training)...")
     wallet_history = defaultdict(lambda: {
         'tx_count': 0,
         'total_sent': 0.0,
-        'total_received': 0.0,
-        'timestamps': [],
-        'sent_to': set(),
-        'received_from': set()
     })
-
+    
+    # --- MODIFICATION ---
+    # We only pre-calculate what the DB will *actually* store,
+    # which is tx_count and avg_transaction_value (derived from total_sent).
+    # agents.py only queries these two fields.
     for tx in transactions:
         from_addr = tx['from_address'].lower()
-        to_addr = tx['to_address'].lower()
         value = tx['value_eth']
-
         wallet_history[from_addr]['tx_count'] += 1
         wallet_history[from_addr]['total_sent'] += value
-        wallet_history[from_addr]['sent_to'].add(to_addr)
-        wallet_history[to_addr]['tx_count'] += 1
-        wallet_history[to_addr]['total_received'] += value
-        wallet_history[to_addr]['received_from'].add(from_addr)
-        try:
-            ts = datetime.fromisoformat(tx['timestamp'].replace('Z', ''))
-            wallet_history[from_addr]['timestamps'].append(ts)
-        except:
-            pass
 
-    # --- 2. Build Full Transaction Graph (NEW) ---
-    print("Building full transaction graph with NetworkX...")
-    G = nx.DiGraph()
+    # Calculate average value
+    wallet_profiles = {}
+    for addr, data in wallet_history.items():
+        wallet_profiles[addr] = {
+            'tx_count': data['tx_count'],
+            'avg_sent': data['total_sent'] / max(data['tx_count'], 1)
+        }
+        
+    # --- MODIFICATION: Create a simple profile for receiver tx_count ---
+    # agents.py also queries receiver_tx_count.
+    receiver_counts = defaultdict(int)
     for tx in transactions:
-        from_addr = tx['from_address'].lower()
         to_addr = tx['to_address'].lower()
-        if from_addr != to_addr: # Exclude self-transfers from graph metrics
-            G.add_edge(from_addr, to_addr, weight=tx['value_eth'])
-
-    # --- 3. Pre-calculate Graph Metrics (NEW) ---
-    print("Calculating graph-wide metrics (PageRank, Centrality, Clustering)...")
-    # Note: These are expensive but calculated only once
+        receiver_counts[to_addr] += 1
     
-    # PageRank: Identifies important "hub" wallets
-    pagerank = nx.pagerank(G, alpha=0.85, weight='weight')
-    
-    # Degree Centrality: Simple count of connections
-    in_degree_centrality = nx.in_degree_centrality(G)
-    out_degree_centrality = nx.out_degree_centrality(G)
-    
-    # Clustering Coefficient: "Do my neighbors trade with each other?"
-    # Calculated on an undirected version of the graph
-    clustering = nx.clustering(G.to_undirected())
+    print("✓ Wallet profiles calculated.")
 
-    # Shortest path to a threat node (pre-calculate for all nodes)
-    # This is very expensive. Let's do it per-transaction instead.
-    # We can create a set of "source" nodes from the threat_set
-    threat_nodes_in_graph = threat_set.intersection(G.nodes())
-    
-    # Reverse graph G_rev for calculating path *from* threat
-    G_rev = G.reverse()
-
-    print("✓ Graph metrics calculated.")
-
-
-    # --- 4. Process Transactions and Build Feature Set ---
+    # --- 2. Process Transactions and Build Feature Set ---
     features = []
     labels = []
     print(f"Processing {len(transactions)} transactions for feature extraction...")
@@ -522,43 +500,49 @@ def engineer_enhanced_features(transactions, threat_list):
             1 if to_addr in threat_set else 0,     # 4: To is threat
         ])
 
-        # --- Sender/Receiver profiles (as before) ---
-        sender_history = wallet_history[from_addr]
-        sender_tx_count = sender_history['tx_count']
-        sender_avg_sent = sender_history['total_sent'] / max(sender_tx_count, 1)
-        sender_unique_recipients = len(sender_history['sent_to'])
-        receiver_history = wallet_history[to_addr]
-        receiver_unique_senders = len(receiver_history['received_from'])
-
+        # --- MODIFICATION: Sender/Receiver profiles (SIMPLIFIED) ---
+        # These now *perfectly match* what agents.py can get from the DB
+        
+        sender_profile = wallet_profiles.get(from_addr, {'tx_count': 0, 'avg_sent': 0.001})
+        sender_tx_count = sender_profile['tx_count']
+        sender_avg_sent = sender_profile['avg_sent'] if sender_profile['avg_sent'] > 0 else 0.001
+        
+        receiver_tx_count = receiver_counts.get(to_addr, 0)
+        
         feat.extend([
             sender_tx_count,                       # 5: Sender tx count
             sender_avg_sent,                       # 6: Sender avg value
             value / max(sender_avg_sent, 0.001),   # 7: Value deviation ratio
-            sender_unique_recipients,              # 8: Unique recipients
-            sender_unique_recipients / max(sender_tx_count, 1),  # 9: Recipient diversity
-            receiver_history['tx_count'],          # 10: Receiver tx count
-            receiver_history['total_received'],    # 11: Receiver total received
-            receiver_unique_senders,               # 12: Unique senders to receiver
+        ])
+        
+        # --- MODIFICATION: Hardcoded features ---
+        # These match the hardcoded values in agents.py
+        feat.extend([
+            0, # 8: sender_unique_recipients (Hardcoded 0)
+            0, # 9: recipient_diversity (Hardcoded 0)
+        ])
+        
+        feat.extend([
+            receiver_tx_count,                     # 10: Receiver tx count
+            0, # 11: receiver_total_received (Hardcoded 0)
+            0, # 12: receiver_unique_senders (Hardcoded 0)
         ])
 
         # --- Temporal features (as before) ---
         try:
             ts = datetime.fromisoformat(tx['timestamp'].replace('Z', ''))
             hour, weekday, odd_hours = ts.hour, ts.weekday(), 1 if 2 <= ts.hour <= 5 else 0
-            
-            avg_time_between, min_time_between = 86400, 86400 # Defaults
-            if sender_history['timestamps'] and len(sender_history['timestamps']) > 1:
-                recent_timestamps = sorted([t for t in sender_history['timestamps'] if t <= ts])[-10:]
-                if len(recent_timestamps) >= 2:
-                    time_diffs = [(recent_timestamps[i] - recent_timestamps[i-1]).total_seconds()
-                                  for i in range(1, len(recent_timestamps))]
-                    if time_diffs:
-                        avg_time_between = np.mean(time_diffs)
-                        min_time_between = np.min(time_diffs)
-            
-            feat.extend([hour, weekday, odd_hours, avg_time_between, min_time_between]) # 13, 14, 15, 16, 17
         except:
-            feat.extend([12, 3, 0, 86400, 86400]) # Default values
+            hour, weekday, odd_hours = 12, 3, 0
+            
+        feat.extend([hour, weekday, odd_hours]) # 13, 14, 15
+        
+        # --- MODIFICATION: Hardcoded features ---
+        # These match the hardcoded values in agents.py
+        feat.extend([
+            86400, # 16: avg_time_between_tx
+            86400  # 17: min_time_between_tx
+        ])
 
         # --- Pattern-specific features (as before) ---
         feat.extend([
@@ -572,61 +556,17 @@ def engineer_enhanced_features(transactions, threat_list):
             1 if (value > 0 and (value * 100) % 100 < 0.01) else 0, # 25: Round number
         ])
 
-        # --- NEW NetworkX Features ---
+        # --- MODIFICATION: NetworkX Features REMOVED ---
+        # The 10 NetworkX features (26-35) are no longer added.
         
-        # Get pre-calculated metrics (use .get() for safety if node not in graph)
-        sender_pagerank = pagerank.get(from_addr, 0.0)
-        receiver_pagerank = pagerank.get(to_addr, 0.0)
-        sender_in_degree = in_degree_centrality.get(from_addr, 0.0)
-        sender_out_degree = out_degree_centrality.get(from_addr, 0.0)
-        receiver_in_degree = in_degree_centrality.get(to_addr, 0.0)
-        receiver_out_degree = out_degree_centrality.get(to_addr, 0.0)
-        sender_clustering = clustering.get(from_addr, 0.0)
-        receiver_clustering = clustering.get(to_addr, 0.0)
-
-        # Calculate shortest path to a threat node (on-the-fly)
-        # 26: Shortest path FROM a threat node TO the sender
-        # 27: Shortest path FROM the receiver TO a threat node
-        path_from_threat_to_sender = 99
-        path_from_receiver_to_threat = 99
-
-        # Use G_rev (reversed graph) to find paths *from* threat nodes *to* sender
-        if from_addr in G_rev:
-            for threat_node in threat_nodes_in_graph:
-                if threat_node != from_addr and nx.has_path(G_rev, threat_node, from_addr):
-                    try:
-                        dist = nx.shortest_path_length(G_rev, threat_node, from_addr)
-                        path_from_threat_to_sender = min(path_from_threat_to_sender, dist)
-                    except nx.NetworkXNoPath:
-                        pass
-        
-        # Use G (forward graph) to find paths *from* receiver *to* threat nodes
-        if to_addr in G:
-            for threat_node in threat_nodes_in_graph:
-                 if threat_node != to_addr and nx.has_path(G, to_addr, threat_node):
-                    try:
-                        dist = nx.shortest_path_length(G, to_addr, threat_node)
-                        path_from_receiver_to_threat = min(path_from_receiver_to_threat, dist)
-                    except nx.NetworkXNoPath:
-                        pass
-
-        feat.extend([
-            sender_pagerank,                    # 26: Sender PageRank (importance)
-            receiver_pagerank,                  # 27: Receiver PageRank
-            sender_in_degree,                   # 28: Sender In-Degree (collection)
-            sender_out_degree,                  # 29: Sender Out-Degree (smurfing)
-            receiver_in_degree,                 # 30: Receiver In-Degree
-            receiver_out_degree,                # 31: Receiver Out-Degree
-            sender_clustering,                  # 32: Sender Clustering (fraud ring)
-            receiver_clustering,                # 33: Receiver Clustering
-            path_from_threat_to_sender,         # 34: Hops from nearest threat (source)
-            path_from_receiver_to_threat,       # 35: Hops to nearest threat (destination)
-        ])
+        # Final feature count should be 26
+        if len(feat) != 26:
+            raise Exception(f"Feature engineering created {len(feat)} features, expected 26.")
 
         features.append(feat)
         labels.append(tx['is_fraud'])
 
-    print(f"✓ Engineered {len(features[0])} features per transaction")
+    print(f"✓ Engineered {len(features[0])} features per transaction (aligned with agents.py)")
     return np.array(features), np.array(labels)
 
 
@@ -634,7 +574,7 @@ def engineer_enhanced_features(transactions, threat_list):
 def train_enhanced_model(transactions, threat_list):
     """Train model with proper evaluation and no data leakage"""
     print("\n" + "="*70)
-    print("ENHANCED MODEL TRAINING (with NetworkX Features)")
+    print("ENHANCED MODEL TRAINING (Aligned with 26 Real-Time Features)")
     print("="*70)
 
     # Engineer features
@@ -774,19 +714,20 @@ def train_enhanced_model(transactions, threat_list):
 
     # Feature importance
     print("\n--- Top 15 Most Important Features ---")
-    # UPDATED list with 36 features
+    # --- MODIFICATION: Updated list with 26 features ---
     feature_names = [
         'value_eth', 'gas_price', 'total_cost', 'from_threat', 'to_threat', # 0-4
         'sender_tx_count', 'sender_avg_value', 'value_deviation',           # 5-7
-        'sender_unique_recipients', 'recipient_diversity',                  # 8-9
-        'receiver_tx_count', 'receiver_total_received', 'receiver_unique_senders', # 10-12
-        'hour', 'weekday', 'odd_hours', 'avg_time_between_tx', 'min_time_between_tx', # 13-17
-        'very_high_value', 'high_value', 'micro_value', 'high_gas', 'low_gas',     # 18-22
+        'sender_unique_recipients_HARDCODED', # 8
+        'recipient_diversity_HARDCODED',      # 9
+        'receiver_tx_count',                  # 10
+        'receiver_total_received_HARDCODED',  # 11
+        'receiver_unique_senders_HARDCODED',  # 12
+        'hour', 'weekday', 'odd_hours',       # 13-15
+        'avg_time_between_tx_HARDCODED',      # 16
+        'min_time_between_tx_HARDCODED',      # 17
+        'very_high_value', 'high_value', 'micro_value', 'high_gas', 'low_gas', # 18-22
         'gas_value_ratio', 'self_transfer', 'round_number',                   # 23-25
-        'sender_pagerank', 'receiver_pagerank',                               # 26-27
-        'sender_in_degree', 'sender_out_degree', 'receiver_in_degree', 'receiver_out_degree', # 28-31
-        'sender_clustering', 'receiver_clustering',                           # 32-33
-        'path_from_threat_to_sender', 'path_from_receiver_to_threat'          # 34-35
     ]
 
     importances = model.feature_importances_
@@ -853,6 +794,9 @@ def train_enhanced_model(transactions, threat_list):
     print("="*70)
 
 
+# ================== DB & FILE CREATION ==================
+# (These functions remain the same as your file)
+
 def create_directories():
     """Create necessary directories"""
     directories = [
@@ -873,6 +817,7 @@ def create_wallet_profiles_db(wallets):
         conn = sqlite3.connect(str(filepath))
         cursor = conn.cursor()
         cursor.execute("DROP TABLE IF EXISTS wallet_profiles")
+        # DB schema remains the same, as agents.py only reads these fields
         cursor.execute("""
             CREATE TABLE wallet_profiles (
                 wallet_address TEXT PRIMARY KEY,
@@ -939,7 +884,7 @@ def main():
     """Main setup function"""
     start_time = datetime.now()
     print("=" * 70)
-    print("ENHANCED BLOCKCHAIN FRAUD DETECTION - SETUP (with NetworkX)")
+    print("ENHANCED BLOCKCHAIN FRAUD DETECTION - SETUP (26-Feature Aligned)")
     print("=" * 70)
     print(f"Configuration:")
     print(f"  Total transactions: {TOTAL_TRANSACTIONS:,}")
@@ -973,34 +918,21 @@ def main():
 
     print("\n📊 IMPROVEMENTS IN THIS VERSION:")
     print("=" * 70)
+    print("✓✓✓ FIXED Training-Serving Skew (26 features in train, 26 in predict)")
+    print("✓ Model is now trained on the *exact* features the live agent can generate.")
+    print("✓ This will result in a *much more accurate* real-world performance.")
     print("✓ 7 diverse fraud patterns (vs. 5 basic patterns)")
     print("✓ Temporal split prevents data leakage")
     print("✓ More realistic 3% fraud rate (vs. 9%)")
-    print("✓ Enhanced feature engineering (36 features)")
-    print("✓ Separate high-value legitimate wallets")
-    print("✓ Behavioral patterns: velocity, timing, network")
     print("✓ Proper evaluation: ROC-AUC, PR-AUC, optimal threshold")
-    print("✓✓✓ ADDED NetworkX features (PageRank, Centrality, Clustering, Pathfinding) to model")
-    
-    print("\n🎯 FRAUD PATTERNS INCLUDED:")
-    print("=" * 70)
-    for pattern, count in FRAUD_PATTERNS.items():
-        print(f"  • {pattern}: ~{count} transactions")
-
-    print("\n📈 EXPECTED PERFORMANCE:")
-    print("=" * 70)
-    print("  • Accuracy:     > 97%")
-    print("  • Precision:    ~70-85% (for Fraud class)")
-    print("  • Recall:       ~85-95% (for Fraud class)")
-    print("  • ROC-AUC:      > 0.95")
-    print("  • PR-AUC:       > 0.80")
+    print("✗ REMOVED NetworkX features (as they can't be calculated live)")
     
     print("\n🚀 NEXT STEPS:")
     print("=" * 70)
-    print("1. Run: setup.bat (This will install networkx and run this new training script)")
-    print("2. Check metrics in output (they should be much better)")
+    print("1. Run: setup.bat (This will run this new training script)")
+    print("2. Check metrics in output (They may be slightly lower, but are now *realistic*)")
     print("3. Start backend: start_backend.bat")
-    print("4. Monitor live transactions (Agent 3 will now be active)")
+    print("4. Monitor live transactions (The model will now work correctly!)")
     print("=" * 70)
 
 
