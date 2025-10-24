@@ -1,3 +1,4 @@
+# backend/server.py
 import csv
 import json
 import os
@@ -137,7 +138,8 @@ def update_csv_status(filepath, tx_hash, new_status, fieldnames):
         for key in ['value_eth', 'gas_price', 'final_score', 'agent_1_score', 'agent_2_score', 'agent_3_score', 'ml_fraud_probability']:
             try: updated_row[key] = float(updated_row[key])
             except (ValueError, TypeError): updated_row[key] = 0.0
-        row['reasons'] = str(row.get('reasons', ''))
+        # This line had an error in your provided file, fixed 'row' to 'updated_row'
+        updated_row['reasons'] = str(updated_row.get('reasons', ''))
         
         if pd.isna(updated_row.get('is_fraud')):
             updated_row['is_fraud'] = None
@@ -490,6 +492,67 @@ def remove_threat():
         return jsonify({"message": f"Wallet address {wallet_to_remove} removed from threat list."}), 200
     except Exception as e:
         return jsonify({"error": f"Failed to remove threat: {str(e)}"}), 500
+
+
+# --- NEW SIMULATION ENDPOINT ---
+@app.route('/api/simulate-transaction', methods=['POST'])
+def simulate_transaction():
+    """
+    Accepts a custom transaction from the frontend, processes it through
+    the pipeline, and emits it as if it were a real-time transaction.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON payload provided."}), 400
+
+    try:
+        from_address = data.get('from_address', '').lower()
+        to_address = data.get('to_address', '').lower()
+        value_eth = float(data.get('value_eth', 0))
+
+        if not from_address or not to_address or value_eth <= 0:
+            return jsonify({"error": "from_address, to_address, and a positive value_eth are required."}), 400
+
+        # Create a mock transaction object
+        adapted_tx = {
+            "tx_hash": f"sim_{int(time.time() * 1000)}_{random.randint(1000, 9999)}",
+            "from_address": from_address,
+            "to_address": to_address,
+            "value_eth": value_eth,
+            "gas_price": float(data.get('gas_price', random.uniform(20, 100))),
+            "timestamp": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "gas_limit": 21000,  # Mock value
+            "block_number": None # Mock value
+        }
+
+        print(f"[Simulation] Processing Tx: {adapted_tx['tx_hash']} ({value_eth} ETH from {from_address[:6]}... to {to_address[:6]}...)")
+
+        # --- Process it using the SAME pipeline ---
+        processed_tx = process_transaction_pipeline(
+            adapted_tx.copy(),
+            model_timestamp=SELECTED_MODEL_TIMESTAMP
+        )
+        
+        status = processed_tx.get('final_status')
+        score = processed_tx.get('final_score', 0)
+
+        print(f"  -> Simulated. Status: {status}, Score: {score:.1f}. Emitting to live feed.")
+
+        # --- Emit on the SAME websocket event ---
+        socketio.emit('new_scanned_transaction', processed_tx)
+
+        # --- Save to the SAME CSV file ---
+        append_to_csv(OUTPUT_FILE, processed_tx, CSV_FIELDNAMES)
+        print(f"  -> Saved simulated transaction to CSV.")
+
+        # Return the processed transaction data to the frontend
+        return jsonify({"message": "Simulation successful", "transaction": processed_tx}), 200
+
+    except ValueError:
+        return jsonify({"error": "Invalid value_eth or gas_price. Must be numbers."}), 400
+    except Exception as e:
+        print(f"[Simulation] Error: {e}")
+        return jsonify({"error": f"An internal error occurred: {str(e)}"}), 500
 
 
 # --- Main Execution ---
