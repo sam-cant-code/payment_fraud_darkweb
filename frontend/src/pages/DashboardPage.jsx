@@ -9,6 +9,10 @@ import TransactionDetail from '../components/dashboard/TransactionDetail';
 import Loader from '../components/shared/Loader';
 import { AlertCircle, BarChart2, Filter, XCircle, ChevronDown } from 'lucide-react';
 import { useTransactionStore } from '../store/transactionStore';
+import NetworkGraph from '../components/charts/NetworkGraph';
+import Agent3Stats from '../components/dashboard/Agent3Stats';
+
+
 
 const DashboardPage = ({ onSubmitReview, isLoadingReview }) => {
   // --- Zustand State ---
@@ -136,6 +140,27 @@ const DashboardPage = ({ onSubmitReview, isLoadingReview }) => {
             Risk Score Timeline ({filteredTransactions.length} Filtered)
           </h3>
         <RiskTimeline data={[...filteredTransactions].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))} />
+      </div>
+
+   
+
+      {/* 5. Network Analysis Section */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      {/* Agent 3 Stats */}
+      <div className="xl:col-span-1 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+        <Agent3Stats transactions={filteredTransactions} />
+      </div>
+
+      {/* Network Graph */}
+      <div className="xl:col-span-2 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+        <h3 className="text-lg font-semibold text-slate-800 mb-2">
+          Transaction Network Graph
+        </h3>
+        <NetworkGraph 
+          transactions={filteredTransactions} 
+          maxTransactions={50} 
+        />
+      </div>
       </div>
 
 
