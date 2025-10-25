@@ -1,6 +1,9 @@
 """
-Agent Logic Module - CALIBRATED VERSION
-Enhanced scoring with proper threat detection and balanced weights
+Agent Logic Module for Blockchain Fraud Detection MVP
+*** VERSION 3.4 - READS MODEL ID FROM COMMAND-LINE ARG ***
+- Reads sys.argv[1] to set the model ID on startup.
+- This allows the backend to be started with a specific model.
+- Example: python server.py 20251023_115133
 """
 
 import pickle
@@ -21,21 +24,38 @@ PROJECT_ROOT = BACKEND_DIR.parent
 DB_PATH = PROJECT_ROOT / 'data' / 'wallet_profiles.db'
 THREAT_FILE_PATH = PROJECT_ROOT / 'data' / 'dark_web_wallets.txt'
 
-# Model selection from command-line
+
+# --- !! MODEL SELECTION (FOR BACKEND) !! ---
 FORCED_MODEL_TIMESTAMP = None
-if len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-    FORCED_MODEL_TIMESTAMP = sys.argv[1]
+if len(sys.argv) > 1:
+    if not sys.argv[1].startswith('-'):
+        FORCED_MODEL_TIMESTAMP = sys.argv[1]
 
-print(f"[agents.py] Model: {FORCED_MODEL_TIMESTAMP or 'latest'}")
 
+print(f"[agents.py] Project root: {PROJECT_ROOT}")
+print(f"[agents.py] DB path: {DB_PATH} (exists: {DB_PATH.exists()})")
+if FORCED_MODEL_TIMESTAMP:
+    print(f"[agents.py] Backend model set to: {FORCED_MODEL_TIMESTAMP} (from command-line)")
+else:
+    print(f"[agents.py] Backend model set to: 'latest' (default)")
+
+
+# --- FIXED AGENT 3 IMPORT ---
 try:
-    from agent_3_network import agent_3_network
+    # Try importing from the same directory (app/)
+    from app.agent_3_network import agent_3_network
+    print("[agents.py] ✓ Agent 3 (Network Analysis) loaded successfully")
 except ImportError:
-    print("Warning: agent_3_network.py not found. Agent 3 will be skipped.")
-    def agent_3_network(transaction: Dict) -> Dict:
-        transaction['agent_3_score'] = 0
-        transaction['agent_3_reasons'] = ["Agent 3 skipped (module not found)"]
-        return transaction
+    try:
+        # Try importing without 'app.' prefix (when run directly)
+        from agent_3_network import agent_3_network
+        print("[agents.py] ✓ Agent 3 (Network Analysis) loaded successfully")
+    except ImportError:
+        print("[agents.py] ⚠️  Warning: agent_3_network.py not found. Agent 3 will be skipped.")
+        def agent_3_network(transaction: Dict) -> Dict:
+            transaction['agent_3_score'] = 0
+            transaction['agent_3_reasons'] = ["Agent 3 skipped (module not found)"]
+            return transaction
 
 # --- Global Cache ---
 THREAT_LIST_CACHE = None
@@ -73,8 +93,7 @@ def load_dark_web_wallets(force_reload: bool = False) -> set:
 
 def agent_1_monitor(transaction: Dict) -> Dict:
     """
-    Agent 1: Threat Intelligence & Heuristics (CALIBRATED)
-    Max Score: ~100 points
+    Agent 1: Threat Intelligence & Heuristics
     """
     score = 0
     reasons = []
@@ -84,42 +103,35 @@ def agent_1_monitor(transaction: Dict) -> Dict:
     value_eth = transaction.get('value_eth', 0.0)
     timestamp_str = transaction.get('timestamp')
 
-    # === CRITICAL THREATS (50-60 points) ===
-    
-    # Known Malicious Sender
+    # Known Threat List Check
     if from_addr in dark_web_wallets:
-        score += 50
-        reasons.append(f"CRITICAL: Sender on threat list ({from_addr[:10]}...)")
+        score += 40
+        reasons.append(f"From-Wallet ({from_addr[:10]}...) on Threat List")
 
-    # Known Malicious Receiver
     if to_addr in dark_web_wallets:
         if to_addr in KNOWN_MIXER_ADDRESSES:
-            score += 60
-            reasons.append(f"CRITICAL: Transaction to known mixer ({to_addr[:10]}...)")
-        else:
             score += 50
-            reasons.append(f"CRITICAL: Recipient on threat list ({to_addr[:10]}...)")
+            reasons.append(f"To-Wallet ({to_addr[:10]}...) is a known Mixer")
+        else:
+            score += 40
+            reasons.append(f"To-Wallet ({to_addr[:10]}...) on Threat List")
 
-    # === HIGH-RISK PATTERNS (20-35 points) ===
-    
-    # Very High Value Transaction
+    # High Value Check
     if value_eth > 100:
-        score += 30
-        reasons.append(f"Very high-value transaction: {value_eth:.2f} ETH")
+        score += 20
+        reasons.append(f"Very high-value transaction: {value_eth:.4f} ETH")
     elif value_eth > 50:
-        score += 15
-        reasons.append(f"High-value transaction: {value_eth:.2f} ETH")
+        score += 10
+        reasons.append(f"High-value transaction: {value_eth:.4f} ETH")
 
-    # Small Repetitive Transfers (Structuring)
+    # Small Repetitive Transfers
     if value_eth > 0 and value_eth < SMALL_TRANSFER_VALUE and from_addr:
         now = datetime.now(UTC)
         if from_addr not in RECENT_SMALL_TRANSFERS:
             RECENT_SMALL_TRANSFERS[from_addr] = []
         
-        # Clean old transfers
         RECENT_SMALL_TRANSFERS[from_addr] = [
-            ts for ts in RECENT_SMALL_TRANSFERS[from_addr] 
-            if now - ts <= TRANSFER_WINDOW
+            ts for ts in RECENT_SMALL_TRANSFERS[from_addr] if now - ts <= TRANSFER_WINDOW
         ]
         
         try:
@@ -131,58 +143,22 @@ def agent_1_monitor(transaction: Dict) -> Dict:
         
         count = len(RECENT_SMALL_TRANSFERS[from_addr])
         if count >= TRANSFER_THRESHOLD:
-            score += 25
-            reasons.append(f"Structuring pattern: {count} small transfers in {TRANSFER_WINDOW.seconds//60} min")
+            score += 15
+            reasons.append(f"High frequency of small transfers ({count})")
 
-    # === MEDIUM-RISK PATTERNS (10-20 points) ===
-    
-    # Very High Gas Price (Urgency indicator)
+    # High Gas Price Check
     gas_price = transaction.get('gas_price', 0.0)
     if gas_price > 200:
-        score += 15
-        reasons.append(f"Very high gas price: {gas_price:.2f} Gwei (urgency indicator)")
-    elif gas_price > 150:
-        score += 8
-        reasons.append(f"High gas price: {gas_price:.2f} Gwei")
+        score += 10
+        reasons.append(f"Very high gas price: {gas_price:.2f} Gwei")
 
-    # Suspiciously Low Gas (Potential test transaction)
-    if gas_price > 0 and gas_price < 10:
-        score += 5
-        reasons.append(f"Unusually low gas: {gas_price:.2f} Gwei")
-
-    # === LOW-RISK INDICATORS (5-10 points) ===
-    
     # Self-Transfer
     if from_addr and to_addr and from_addr == to_addr and value_eth > 0:
-        score += 10
-        reasons.append("Self-transfer detected (possible wallet consolidation)")
+        score += 5
+        reasons.append("Self-transfer detected")
 
-    # Round Number Transaction (Potential test)
-    if value_eth > 0:
-        # Check if it's a very round number (e.g., 1.0, 10.0, 100.0)
-        if value_eth in [1.0, 5.0, 10.0, 50.0, 100.0]:
-            score += 5
-            reasons.append(f"Round number transaction: {value_eth} ETH")
-
-    # === TEMPORAL ANOMALIES ===
-    
-    try:
-        tx_time = datetime.fromisoformat(timestamp_str.replace('Z', ''))
-        hour = tx_time.hour
-        
-        # Late night transactions (2 AM - 5 AM)
-        if 2 <= hour <= 5:
-            score += 8
-            reasons.append(f"Transaction at unusual hour: {hour:02d}:00")
-    except:
-        pass
-
-    # Cap at 100
-    final_score = min(score, 100)
-    
-    transaction['agent_1_score'] = final_score
-    transaction['agent_1_reasons'] = reasons if reasons else ["No immediate threats detected"]
-    
+    transaction['agent_1_score'] = min(score, 100)
+    transaction['agent_1_reasons'] = reasons
     return transaction
 
 
@@ -257,6 +233,7 @@ def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
             sender_profile = get_wallet_profile_from_db(None, None)
             receiver_profile = get_wallet_profile_from_db(None, None)
     else:
+        print(f"Warning: {DB_PATH} not found. Using default profiles.")
         sender_profile = get_wallet_profile_from_db(None, None)
         receiver_profile = get_wallet_profile_from_db(None, None)
 
@@ -314,14 +291,11 @@ def engineer_features_for_prediction(transaction: Dict) -> np.ndarray:
 
 
 def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
-    """
-    Agent 2: Behavioral Profiler (ML Model) (CALIBRATED)
-    Max Score: ~70 points
-    """
+    """Agent 2: Behavioral Profiler (ML Model)"""
     score = 0
     reasons = []
 
-    # Load model
+    # Load Model, Scaler, and Metadata
     effective_timestamp = model_timestamp or FORCED_MODEL_TIMESTAMP 
 
     if effective_timestamp:
@@ -337,6 +311,7 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
             scaler_path = PROJECT_ROOT / 'models' / f'scaler_{latest_timestamp}.pkl'
             metadata_path = PROJECT_ROOT / 'models' / f'model_metadata_{latest_timestamp}.json'
         except FileNotFoundError:
+            print("Warning: 'latest_model_timestamp.txt' not found. Using default paths.")
             model_path = PROJECT_ROOT / 'models' / 'fraud_model.pkl'
             scaler_path = PROJECT_ROOT / 'models' / 'scaler.pkl'
             metadata_path = PROJECT_ROOT / 'models' / 'model_metadata.json'
@@ -348,8 +323,10 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
                 optimal_threshold = metadata.get('optimal_threshold', 0.5)
+        else:
+            print(f"Warning: Metadata file not found at {metadata_path}")
     except Exception as e:
-        print(f"Warning: Could not load metadata: {e}")
+        print(f"Warning: Could not load metadata. Using 0.5 threshold. Error: {e}")
 
     # ML Model Prediction
     if model_path.exists() and scaler_path.exists():
@@ -366,22 +343,18 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
             
             model_id = f" (Model: {effective_timestamp})"
             
-            # CALIBRATED SCORING
             if fraud_probability >= 0.90:
-                score += 70
-                reasons.append(f"ML: Critical fraud risk ({fraud_probability:.1%}){model_id}")
-            elif fraud_probability >= 0.80:
-                score += 55
-                reasons.append(f"ML: Very high fraud risk ({fraud_probability:.1%}){model_id}")
-            elif fraud_probability >= 0.70:
+                score += 60
+                reasons.append(f"ML: Very High Fraud Risk ({fraud_probability:.1%}){model_id}")
+            elif fraud_probability >= 0.75:
                 score += 40
-                reasons.append(f"ML: High fraud risk ({fraud_probability:.1%}){model_id}")
+                reasons.append(f"ML: High Fraud Risk ({fraud_probability:.1%}){model_id}")
             elif fraud_probability >= 0.60:
                 score += 25
-                reasons.append(f"ML: Elevated fraud risk ({fraud_probability:.1%}){model_id}")
+                reasons.append(f"ML: Moderate Fraud Risk ({fraud_probability:.1%}){model_id}")
             elif fraud_probability >= optimal_threshold:
-                score += 15
-                reasons.append(f"ML: Moderate fraud risk ({fraud_probability:.1%}){model_id}")
+                score += 10
+                reasons.append(f"ML: Elevated Fraud Risk ({fraud_probability:.1%}){model_id}")
 
             transaction['ml_fraud_probability'] = round(fraud_probability, 4)
             transaction['ml_prediction'] = prediction
@@ -391,60 +364,33 @@ def agent_2_behavioral(transaction: Dict, model_timestamp: str = None) -> Dict:
             transaction['ml_fraud_probability'] = -1.0
             transaction['ml_prediction'] = -1
     else:
+        print(f"Warning: Model/Scaler not found. ML agent returning 0.")
+        print(f"  Model: {model_path} (Exists: {model_path.exists()})")
+        print(f"  Scaler: {scaler_path} (Exists: {scaler_path.exists()})")
         transaction['ml_fraud_probability'] = -1.0
         transaction['ml_prediction'] = -1
 
-    final_score = min(score, 70)
-    transaction['agent_2_score'] = final_score
-    transaction['agent_2_reasons'] = reasons if reasons else ["No behavioral anomalies detected"]
-    
+    transaction['agent_2_score'] = min(score, 100)
+    transaction['agent_2_reasons'] = reasons
     return transaction
 
 
 def agent_4_decision(transaction: Dict) -> Dict:
-    """
-    Agent 4: Decision Aggregator (RECALIBRATED)
-    
-    Scoring System:
-    - Agent 1 (Threat Intel): 0-100, Weight: 1.0
-    - Agent 2 (ML Behavioral): 0-70, Weight: 1.3
-    - Agent 3 (Network): 0-100, Weight: 0.8
-    
-    Max theoretical score: (100 * 1.0) + (70 * 1.3) + (100 * 0.8) = 271
-    But we cap at 150 for cleaner display
-    
-    Thresholds:
-    - DENY: >= 80 (very high confidence fraud)
-    - FLAG_FOR_REVIEW: >= 45 (suspicious, needs review)
-    - APPROVE: < 45 (low risk)
-    """
+    """Agent 4: Decision Aggregator"""
     agent_1_score = transaction.get('agent_1_score', 0)
     agent_2_score = transaction.get('agent_2_score', 0)
     agent_3_score = transaction.get('agent_3_score', 0)
 
-    # Weighted score calculation
-    final_score = (agent_1_score * 1.0) + (agent_2_score * 1.3) + (agent_3_score * 0.8)
-    
-    # Collect all reasons
+    final_score = (agent_1_score * 0.8) + (agent_2_score * 1.2) + (agent_3_score * 0.5)
     all_reasons = []
     all_reasons.extend(transaction.get('agent_1_reasons', []))
     all_reasons.extend(transaction.get('agent_2_reasons', []))
     all_reasons.extend(transaction.get('agent_3_reasons', []))
-    
-    # Cap at 150
     final_score = round(min(final_score, 150.0), 1)
 
-    # Decision thresholds
-    DENY_THRESHOLD = 80
+    DENY_THRESHOLD = 75
     REVIEW_THRESHOLD = 45
 
-    # Priority override: If Agent 1 detects critical threat, escalate
-    if agent_1_score >= 50:  # Critical threat detected
-        if final_score < REVIEW_THRESHOLD:
-            final_score = REVIEW_THRESHOLD  # Ensure at least flagged
-        all_reasons.insert(0, "⚠️ CRITICAL THREAT DETECTED - Escalated")
-
-    # Determine status
     if final_score >= DENY_THRESHOLD:
         status = "DENY"
     elif final_score >= REVIEW_THRESHOLD:
@@ -455,7 +401,6 @@ def agent_4_decision(transaction: Dict) -> Dict:
     transaction['final_score'] = final_score
     transaction['final_status'] = status
     transaction['reasons'] = " | ".join(all_reasons) if all_reasons else "No flags detected"
-    
     return transaction
 
 
@@ -465,45 +410,17 @@ def process_transaction_pipeline(transaction: Dict, model_timestamp: str = None)
     processed_tx = agent_2_behavioral(processed_tx, model_timestamp=model_timestamp)
     processed_tx = agent_3_network(processed_tx)
     processed_tx = agent_4_decision(processed_tx)
-    
     if 'is_fraud' in transaction:
         processed_tx['is_fraud'] = transaction['is_fraud']
-    
     return processed_tx
 
 
 def get_system_thresholds():
     """Returns current system thresholds"""
     return {
-        "agent_4_decision": {
-            "deny_threshold": 80,
-            "review_threshold": 45,
-            "approve_threshold": 0
-        },
-        "agent_1_threat": {
-            "critical_threat": 50,
-            "high_value": 30,
-            "structuring": 25,
-            "high_gas": 15
-        },
-        "agent_2_behavioral_ml": {
-            "critical_risk": 70,
-            "very_high_risk": 55,
-            "high_risk": 40,
-            "elevated_risk": 25
-        },
-        "agent_3_network": {
-            "circular_direct": 45,
-            "circular_short": 35,
-            "high_fanout": 35,
-            "high_fanin": 35,
-            "rapid_velocity": 30
-        },
-        "weights": {
-            "agent_1": 1.0,
-            "agent_2": 1.3,
-            "agent_3": 0.8
-        }
+        "agent_4_decision": { "deny_threshold": 75, "review_threshold": 45, "approve_threshold": 0 },
+        "agent_1_threat": { "threat_list_match": 40, "mixer_match": 50, },
+        "agent_2_behavioral_ml": { "very_high_risk": 60, "high_risk": 40, "moderate_risk": 25, }
     }
 
 
@@ -515,58 +432,43 @@ def analyze_transaction(tx_hash: str, transaction: Dict, model_timestamp: str = 
         "final_status": processed.get('final_status'),
         "final_score": processed.get('final_score'),
         "breakdown": {
-            "agent_1": {
-                "score": processed.get('agent_1_score', 0),
-                "reasons": processed.get('agent_1_reasons', [])
-            },
-            "agent_2": {
-                "score": processed.get('agent_2_score', 0),
-                "reasons": processed.get('agent_2_reasons', []),
-                "ml_probability": processed.get('ml_fraud_probability', 0)
-            },
-            "agent_3": {
-                "score": processed.get('agent_3_score', 0),
-                "reasons": processed.get('agent_3_reasons', [])
-            }
+            "agent_1": { "score": processed.get('agent_1_score', 0), "reasons": processed.get('agent_1_reasons', []) },
+            "agent_2": { "score": processed.get('agent_2_score', 0), "reasons": processed.get('agent_2_reasons', []), "ml_probability": processed.get('ml_fraud_probability', 0) },
+            "agent_3": { "score": processed.get('agent_3_score', 0), "reasons": processed.get('agent_3_reasons', []) }
         },
-        "transaction_data": {
-            "from": transaction.get('from_address'),
-            "to": transaction.get('to_address'),
-            "value": transaction.get('value_eth'),
-            "gas": transaction.get('gas_price')
-        }
+        "transaction_data": { "from": transaction.get('from_address'), "to": transaction.get('to_address'), "value": transaction.get('value_eth'), "gas": transaction.get('gas_price') }
     }
     return analysis
 
 
 if __name__ == "__main__":
-    """Test block"""
+    """Test block for running `python agents.py` directly."""
     print("=" * 60)
-    print("Testing Calibrated Agent Pipeline")
+    print("Testing Agent Pipeline (V3.4)...")
+    
+    if FORCED_MODEL_TIMESTAMP:
+        print(f"[TEST MODE] Using model from command-line: {FORCED_MODEL_TIMESTAMP}")
+    else:
+        print("[TEST MODE] Using 'latest' model (no argument provided)")
     print("=" * 60)
     
     if not DB_PATH.exists() or not THREAT_FILE_PATH.exists():
         print("ERROR: Database or threat list not found.")
-        print("Please run 'initialize_and_train.py' first!")
+        print(f"Please run 'initialize_and_train.py' first!")
     else:
-        # Test normal transaction
         test_tx_normal = {
             "tx_hash": "0xtest_normal_123",
             "from_address": "0xnorm000000000000000000000000000000000000",
             "to_address": "0xnorm000000000000000000000000000000000001",
-            "value_eth": 2.5,
-            "gas_price": 50.0,
+            "value_eth": 2.5, "gas_price": 50.0,
             "timestamp": datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
             "is_fraud": 0
         }
-        
-        # Test fraudulent transaction
         test_tx_fraud = {
             "tx_hash": "0xtest_fraud_456",
-            "from_address": "0xbad0000000000000000000000000000000000000",
-            "to_address": "0xnorm000000000000000000000000000000000002",
-            "value_eth": 150.5,
-            "gas_price": 250.0,
+            "from_address": "0xnorm000000000000000000000000000000000002",
+            "to_address": "0xbad0000000000000000000000000000000000000",
+            "value_eth": 150.5, "gas_price": 250.0,
             "timestamp": datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
             "is_fraud": 1
         }
@@ -575,20 +477,12 @@ if __name__ == "__main__":
         result_normal = process_transaction_pipeline(test_tx_normal)
         print(f"Final Status: {result_normal['final_status']}")
         print(f"Final Score: {result_normal['final_score']}")
-        print(f"Agent Scores: A1={result_normal['agent_1_score']}, A2={result_normal['agent_2_score']}, A3={result_normal['agent_3_score']}")
         print(f"Reasons: {result_normal['reasons']}")
         
         print("\n--- Testing FRAUDULENT Transaction ---")
         result_fraud = process_transaction_pipeline(test_tx_fraud)
         print(f"Final Status: {result_fraud['final_status']}")
         print(f"Final Score: {result_fraud['final_score']}")
-        print(f"Agent Scores: A1={result_fraud['agent_1_score']}, A2={result_fraud['agent_2_score']}, A3={result_fraud['agent_3_score']}")
         print(f"Reasons: {result_fraud['reasons']}")
         
-        print("\n" + "=" * 60)
-        print("Thresholds:")
-        thresholds = get_system_thresholds()
-        print(f"  DENY: >= {thresholds['agent_4_decision']['deny_threshold']}")
-        print(f"  FLAG_FOR_REVIEW: >= {thresholds['agent_4_decision']['review_threshold']}")
-        print(f"  Agent Weights: A1={thresholds['weights']['agent_1']}, A2={thresholds['weights']['agent_2']}, A3={thresholds['weights']['agent_3']}")
         print("=" * 60)
