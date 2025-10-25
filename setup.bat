@@ -1,13 +1,12 @@
 @echo off
 REM ============================================================
-REM Setup Script for Backend (Python)
+REM V4.0 Setup Script for Backend (Python)
 REM ============================================================
 
 echo ============================================================
-echo SETTING UP PYTHON BACKEND
+echo SETTING UP V4.0 PYTHON BACKEND
 echo ============================================================
 echo.
-
 REM Navigate into the backend directory
 cd backend
 if errorlevel 1 (
@@ -50,7 +49,7 @@ if exist "venv" (
 echo.
 
 REM Activate virtual environment and install packages
-echo [4/5] Activating virtual environment and installing packages...
+echo [4/5] Activating virtual environment and installing V4 packages...
 call venv\Scripts\activate.bat
 if errorlevel 1 (
     echo [ERROR] Failed to activate virtual environment
@@ -74,37 +73,40 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo     - All backend dependencies installed.
+echo     - All V4 backend dependencies installed.
 echo.
 
-REM Run the one-time database and model setup
-echo [5/5] Running initial database and model setup...
+REM Run the one-time database and V4 model setup
+echo [5/5] Running initial V4 database and model training...
+echo (This may take several minutes)
 python scripts/initialize_and_train.py
 if errorlevel 1 (
-    echo [ERROR] Failed to initialize database and train model
+    echo [ERROR] Failed to initialize database and train V4 model
     echo Please check the error messages above
     cd ..
     pause
     exit /b 1
 )
 echo.
-
 cd ..
 
 echo ============================================================
-echo BACKEND SETUP COMPLETE!
+echo V4.0 BACKEND SETUP COMPLETE!
 echo ============================================================
 echo.
 echo What was created:
 echo  - Virtual environment (backend/venv/)
-echo  - Database (backend/data/wallet_profiles.db)
-echo  - Trained ML model (backend/models/fraud_model.pkl)
+echo  - V4 Database (backend/data/wallet_profiles.db)
+echo  - V4 Trained ML Ensemble (backend/models/fraud_model_...pkl)
+echo  - V4 Model Scaler (backend/models/scaler_...pkl)
+echo  - V4 Model Metadata (backend/models/model_metadata_...json)
+echo  - Latest model pointer (backend/models/latest_model_timestamp.txt)
 echo  - Threat list (backend/data/dark_web_wallets.txt)
-echo  - Mock transaction data (backend/data/mock_blockchain_transactions.json)
+echo  - V4 Mock transaction data (backend/data/mock_blockchain_transactions.json)
 echo.
 echo Next steps:
-echo  1. Run 'run_accuracy_check.bat' to test the system
-echo  2. Run 'start_backend.bat' to start the API server
-echo  3. [OPTIONAL] Run 'npm install' then 'npm run dev' in frontend/
+echo  1. Run 'start_backend.bat' to start the API server
+echo  2. (Optional) Run 'python backend/scripts/evaluate_model.py' for plots
+echo  3. (Optional) Run 'npm install' then 'npm run dev' in frontend/
 echo.
 pause
